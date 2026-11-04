@@ -350,6 +350,28 @@ const tests = {
     assert.equal(view(b).byTitle('G').note, undefined, '清空备注就删掉');
   },
 
+  async '重命名：名字跟着网页走，跳走时留在记录里，后退时回来'() {
+    const { b, bg, t } = await readingSession();
+    const C = view(b).byTitle('C');
+    await b.send({ type: 'rename', id: C.id, name: '  组会要讲的那篇  ' }); await bg.settle();
+    assert.equal(view(b).byTitle('C').alias, '组会要讲的那篇');
+    assert.equal(view(b).byTitle('C').title, '标题 C', '原标题还在');
+    b.navigate(t.C, url('C') + '#part2'); await bg.settle();
+    assert.equal(view(b).nodes.find(n => n.tab === t.C).alias, '组会要讲的那篇', '只改锚点，名字不变');
+    b.navigate(t.C, url('C1')); await bg.settle();
+    let n = view(b).nodes.find(n => n.tab === t.C);
+    assert.equal(n.alias, undefined, '跳到别的网页，名字不带过去');
+    assert.equal(n.hist.at(-1).alias, '组会要讲的那篇', '名字留在跳转记录里');
+    b.navigate(t.C, url('C') + '#part2'); await bg.settle();   // 后退
+    n = view(b).nodes.find(n => n.tab === t.C);
+    assert.equal(n.alias, '组会要讲的那篇', '后退回来，名字也回来');
+    b.closeTab(t.C); await bg.settle();
+    await b.send({ type: 'focus', id: n.id, win: 1 }); await bg.settle();
+    assert.equal(view(b).nodes.find(x => x.id === n.id).alias, '组会要讲的那篇', '关掉再打开还在');
+    await b.send({ type: 'rename', id: n.id, name: '' }); await bg.settle();
+    assert.equal(view(b).nodes.find(x => x.id === n.id).alias, undefined, '清空就恢复原标题');
+  },
+
   async '手动休眠：正在看的不动，点开后自动醒来'() {
     const { b, bg, t } = await readingSession();
     const ids = ['A', 'B', 'F', 'G'].map(x => view(b).byTitle(x).id);

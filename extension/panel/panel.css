@@ -364,6 +364,20 @@ header {
   word-break: break-word;
 }
 .compact .sub.note { -webkit-line-clamp: 1; }
+/* 重命名：标题原地变成输入框 */
+.title-edit {
+  width: 100%;
+  margin: -2px 0 -1px;
+  padding: 1px 6px;
+  border: 1.5px solid var(--accent);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--fg);
+  font: inherit;
+  font-weight: 600;
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
 .note-edit {
   width: 100%;
   margin-top: 4px;

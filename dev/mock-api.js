@@ -111,6 +111,7 @@
         break;
       }
       case 'star': n.star = msg.star; break;
+      case 'rename': if (msg.name.trim()) n.alias = msg.name.trim(); else delete n.alias; break;
       case 'note': if (msg.note.trim()) n.note = msg.note.trim(); else delete n.note; break;
       case 'setSettings': Object.assign(state.settings, msg.settings); break;
       case 'sleep': { let c = 0; for (const id of msg.ids) if (nodes[id].tab && !nodes[id].sleep) { nodes[id].sleep = true; c++; } emit(); return c; }

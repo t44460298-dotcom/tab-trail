@@ -13,6 +13,7 @@ let terms = [];
 
 const cleanTitles = (() => { try { return JSON.parse(localStorage.getItem('tt.cleanTitles') ?? 'true'); } catch { return true; } })();
 const titleOf = (url, title) => formatTitle(url, title, { arxiv: IDX?.arxiv, clean: cleanTitles });
+const nodeTitle = n => n.alias || titleOf(n.url, n.title);   // 用户起了名字就用名字
 const recency = n => Math.max(n.last || 0, n.seen || 0, n.created || 0);
 
 (async function init() {
@@ -43,12 +44,12 @@ function search() {
   const has = s => terms.every(t => s.toLowerCase().includes(t));
   const out = [];
   for (const n of nodes) {
-    const title = titleOf(n.url, n.title);
+    const title = nodeTitle(n);
     if (has(title + ' ' + (n.title || '') + ' ' + n.url + ' ' + (n.note || ''))) {
       out.push({ n, score: score(n, title) });
       continue;
     }
-    const via = [...(n.hist || [])].reverse().find(h => has((h.title || '') + ' ' + h.url));
+    const via = [...(n.hist || [])].reverse().find(h => has((h.alias || '') + ' ' + (h.title || '') + ' ' + h.url));
     if (via) out.push({ n, via, score: score(n, title) - 30 });
   }
   return out.sort((a, b) => b.score - a.score).slice(0, 60);
@@ -97,7 +98,7 @@ function item({ n, via }, i) {
   main.style.minWidth = '0';
   const t = document.createElement('div');
   t.className = 't';
-  highlight(t, titleOf(n.url, n.title), terms);
+  highlight(t, nodeTitle(n), terms);
   const s = document.createElement('div');
   s.className = 's';
   const ws = state.ws[n.ws];
@@ -116,7 +117,7 @@ function item({ n, via }, i) {
     : part(n.st === 'closed' ? `已关闭 · ${ago(n.closed)}` : '已收起');
   s.append(dot, part(ws.name), part('·'), status);
   if (n.sleep && isLive(n)) s.append(part('· 休眠'));
-  if (via) s.append(part('·'), part(`之前看过：${titleOf(via.url, via.title)}`, 'via'));
+  if (via) s.append(part('·'), part(`之前看过：${via.alias || titleOf(via.url, via.title)}`, 'via'));
   else if (n.note) s.append(part('·'), part(n.note, 'note'));
   main.append(t, s);
 

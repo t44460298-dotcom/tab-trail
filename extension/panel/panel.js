@@ -180,7 +180,9 @@ function ancestors(n) {
 }
 
 const titleOf = (url, title) => formatTitle(url, title, { arxiv: IDX?.arxiv, clean: cleanTitles });
-const displayTitle = n => titleOf(n.url, n.title);
+// 用户起了名字就用名字，否则用整理过的网页标题
+const displayTitle = n => n.alias || titleOf(n.url, n.title);
+const histTitle = h => h.alias || titleOf(h.url, h.title);
 
 function dwellOf(n, view) {
   let d = n.dwell || 0;
@@ -302,7 +304,7 @@ function renderFiltered(tree, view) {
   const match = s => terms.every(t => s.toLowerCase().includes(t));
   const textHit = n => !terms || match(displayTitle(n) + ' ' + (n.title || '') + ' ' + n.url + ' ' + (n.note || ''));
   // 在这个标签之前看过的页面里搜到的
-  const histHit = n => (terms && !textHit(n) ? [...(n.hist || [])].reverse().find(h => match((h.title || '') + ' ' + h.url)) : null);
+  const histHit = n => (terms && !textHit(n) ? [...(n.hist || [])].reverse().find(h => match((h.alias || '') + ' ' + (h.title || '') + ' ' + h.url)) : null);
   const hit = n => f.test(n, view) && (textHit(n) || !!histHit(n));
   const keep = new Set();
   for (const n of view.mine) {
@@ -409,7 +411,7 @@ function row(n, depth, view, opt = {}) {
   main.append(title);
   const subText = n.stashedAt
     ? `${ago(n.stashedAt)}收起 · ${[n, ...descendants(n, view)].filter(x => x.st === 'stashed').length} 个标签`
-    : opt.via ? `之前在这个标签里看过：${titleOf(opt.via.url, opt.via.title)}`
+    : opt.via ? `之前在这个标签里看过：${histTitle(opt.via)}`
     : opt.other ? opt.other.name : '';
   if (subText) {
     const sub = document.createElement('div');
@@ -725,6 +727,41 @@ function editNote(n) {
   };
 }
 
+// 在这一行里直接改名字：标题变成输入框，回车保存，Esc 放弃；清空或改回原标题 = 不再用自定义名字
+function renameNode(n) {
+  hideCard();
+  hideMenu();
+  const el = $(`#tree .row[data-id="${n.id}"]`);
+  if (!el) return;
+  const original = titleOf(n.url, n.title);
+  const input = document.createElement('input');
+  input.className = 'title-edit';
+  input.placeholder = '输入名字，清空就恢复原标题';
+  input.maxLength = 100;
+  input.value = displayTitle(n);
+  el.querySelector('.title').replaceWith(input);
+  el.draggable = false;   // 不然在输入框里拖选文字会变成拖动这一行
+  editing = n.id;
+  input.focus();
+  input.select();
+  input.onclick = e => e.stopPropagation();
+  const done = save => {
+    if (editing !== n.id) return;
+    editing = null;
+    input.onblur = null;
+    const v = input.value.trim();
+    if (save && v !== displayTitle(n)) send('rename', { id: n.id, name: v === original || v === n.title ? '' : v });
+    pendingRender = false;
+    render();
+  };
+  input.onblur = () => done(true);
+  input.onkeydown = e => {
+    e.stopPropagation();
+    if (e.key === 'Enter') done(true);
+    if (e.key === 'Escape') done(false);
+  };
+}
+
 // ---------- 悬停卡片：完整标题和阅读记录 ----------
 
 let cardTimer = null;
@@ -744,7 +781,7 @@ function showCard(n, el) {
     d.textContent = text;
     return d;
   };
-  const parts = [div('t', (n.star ? '★ ' : '') + (n.title && !isBlank(n.url) ? n.title : displayTitle(n))), div('u', n.url)];
+  const parts = [div('t', (n.star ? '★ ' : '') + (n.alias || (n.title && !isBlank(n.url) ? n.title : displayTitle(n)))), div('u', n.url)];
   if (n.note) parts.push(div('n', n.note));
   const dl = document.createElement('dl');
   const line = (k, v, cls) => {
@@ -757,6 +794,7 @@ function showCard(n, el) {
     dl.append(dt, dd);
   };
   const active = n === view.active;
+  if (n.alias) line('原标题', n.title || n.url);
   line('状态', active ? '正在看'
     : isLive(n) ? (n.sleep ? '打开中 · 休眠（点开时重新加载）' : '打开中')
     : n.st === 'closed' ? `已关闭（${ago(n.closed)}）`
@@ -789,7 +827,7 @@ function showCard(n, el) {
     for (const h of shown) {
       const item = document.createElement('div');
       item.className = 'step';
-      item.append(div('st', titleOf(h.url, h.title)), div('sa', short(h.at)));
+      item.append(div('st', histTitle(h)), div('sa', short(h.at)));
       box.append(item);
     }
     const now = document.createElement('div');
@@ -941,6 +979,8 @@ function nodeMenu(n, view, x, y) {
   items.push(n.star
     ? { icon: 'starOn', label: '取消星标', sub: 'S', run: () => send('star', { id: n.id, star: false }) }
     : { icon: 'star', label: '加星标', sub: 'S', run: () => send('star', { id: n.id, star: true }) });
+  items.push({ icon: 'edit', label: n.alias ? '修改名字' : '重命名', sub: 'F2', run: () => renameNode(n) });
+  if (n.alias) items.push({ icon: 'reopen', label: '恢复原标题', run: () => send('rename', { id: n.id, name: '' }) });
   items.push({ icon: 'note', label: n.note ? '修改备注' : '写备注', run: () => editNote(n) });
   if (n.note) items.push({ icon: 'trash', label: '删除备注', run: () => send('note', { id: n.id, note: '' }) });
   items.push(unread
@@ -966,7 +1006,7 @@ function nodeMenu(n, view, x, y) {
     items.push('-');
     items.push({ head: '之前在这个标签里看过 · 点击在新标签打开' });
     for (const h of hist) {
-      items.push({ icon: 'history', label: titleOf(h.url, h.title), sub: short(h.at), run: () => send('openUrl', { url: h.url, parent: n.id }) });
+      items.push({ icon: 'history', label: histTitle(h), sub: short(h.at), run: () => send('openUrl', { url: h.url, parent: n.id }) });
     }
   }
   items.push('-');
@@ -1071,7 +1111,7 @@ function moreMenu() {
       ], ...at);
     } },
     '-',
-    { hint: '<kbd>Alt</kbd>+<kbd>K</kbd> 在任何页面快速搜索标签<br><kbd>/</kbd> 搜索　<kbd>N</kbd> 下一篇未看　<kbd>S</kbd> 星标<br><kbd>↑</kbd><kbd>↓</kbd> 选择　<kbd>←</kbd><kbd>→</kbd> 折叠/展开<br><kbd>Enter</kbd> 打开　<kbd>Esc</kbd> 清空<br>拖动一行可以调整位置' },
+    { hint: '<kbd>Alt</kbd>+<kbd>K</kbd> 在任何页面快速搜索标签<br><kbd>/</kbd> 搜索　<kbd>N</kbd> 下一篇未看　<kbd>S</kbd> 星标<br><kbd>F2</kbd> 重命名　<kbd>↑</kbd><kbd>↓</kbd> 选择　<kbd>←</kbd><kbd>→</kbd> 折叠/展开<br><kbd>Enter</kbd> 打开　<kbd>Esc</kbd> 清空<br>拖动一行可以调整位置' },
   );
   showMenu(items, ...at);
 }
@@ -1197,6 +1237,7 @@ document.addEventListener('keydown', e => {
   }
   if (!typing && e.key === '/') { e.preventDefault(); $('#q').focus(); return; }
   if (!typing && (e.key === 'n' || e.key === 'N')) { nextUnread(); return; }
+  if (!typing && e.key === 'F2' && rows[sel]) { e.preventDefault(); renameNode(rows[sel].n); return; }
   if (!typing && (e.key === 's' || e.key === 'S') && rows[sel]) {
     const n = rows[sel].n;
     send('star', { id: n.id, star: !n.star });

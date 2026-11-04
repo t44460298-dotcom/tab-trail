@@ -9,6 +9,7 @@
 //     seen: 第一次看的时间（0 = 没看过）；last: 最近一次看的时间；dwell: 累计停留毫秒
 //     hist: 在这个标签里点链接跳转之前看过的页面 [{ url, title, at }]，旧的在前
 //     star: 加了星标；note: 一句话备注；sleep: 标签处于休眠（已释放内存）
+//     alias: 用户起的名字（只在插件里显示，原标题仍在 title 里）。名字属于这个网页：跳到别的网页时随 hist 一起留下
 //     order: 手动拖动后在同一级里的位置（没有就按 created 排）；manual: 被手动移动过，不再自动认来源
 //   settings = { sleepAfter }   多少分钟没看就让标签休眠，0 = 不自动休眠
 //   ws[id] = { id, name, named?, win, created, stashed }   一个工作区对应一个浏览器窗口，win 为空表示已收起
@@ -276,12 +277,18 @@ function detach(n) {
   delete n.sleep;
 }
 
-// 同一个标签里跳到新网址：把离开的页面记进 hist。只改了 #锚点的不算；回到上一页（后退）就把它从记录里拿掉
+// 同一个标签里跳到新网址：把离开的页面记进 hist。只改了 #锚点的不算；回到上一页（后退）就把它从记录里拿掉。
+// 用户起的名字跟着网页走：离开时一起记进 hist，后退回来时恢复
 function recordHistory(n, url) {
   if (isBlank(n.url) || isBlank(url) || n.url.split('#')[0] === url.split('#')[0]) return;
   const h = n.hist || (n.hist = []);
-  if (h.length && h[h.length - 1].url === url) { h.pop(); return; }
-  h.push({ url: n.url, title: n.title, at: now() });
+  if (h.length && h[h.length - 1].url === url) {
+    const back = h.pop();
+    if (back.alias) n.alias = back.alias; else delete n.alias;
+    return;
+  }
+  h.push({ url: n.url, title: n.title, at: now(), ...(n.alias ? { alias: n.alias } : {}) });
+  delete n.alias;
   if (h.length > MAX_HIST) h.splice(0, h.length - MAX_HIST);
 }
 
@@ -723,6 +730,13 @@ const actions = {
 
   star({ id, star }) {
     need(id).star = !!star;
+  },
+
+  // 给节点起名字；空字符串表示恢复原标题
+  rename({ id, name }) {
+    const n = need(id);
+    const text = (name || '').trim().slice(0, 100);
+    if (text) n.alias = text; else delete n.alias;
   },
 
   note({ id, note }) {
