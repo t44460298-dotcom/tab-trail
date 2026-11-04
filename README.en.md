@@ -43,11 +43,15 @@ Tab Trail does not replace the tab strip. It adds a **reading tree** in the side
 
 ## Install
 
-Not yet in any extension store. Load it from source (no build step needed):
+Not yet in any extension store. Load it manually (no build step needed):
 
-1. Download this repository (**Code → Download ZIP**) and unzip it somewhere permanent, or `git clone` it.
-2. **Chrome / Edge**: open `chrome://extensions` (or `edge://extensions`), turn on Developer mode, click "Load unpacked" and choose the `extension` folder.
-3. **Firefox**: open `about:debugging#/runtime/this-firefox`, click "Load Temporary Add-on" and choose `extension/manifest.json`. Temporary add-ons are removed when Firefox restarts.
+1. Download the latest `tab-trail-v*.zip` from the **[Releases page](https://github.com/t44460298-dotcom/tab-trail/releases/latest)** and unzip it somewhere permanent.
+2. **Chrome / Edge**: open `chrome://extensions` (or `edge://extensions`), turn on Developer mode, click "Load unpacked" and choose the unzipped folder.
+3. **Firefox**: open `about:debugging#/runtime/this-firefox`, click "Load Temporary Add-on" and choose the zip file. Temporary add-ons are removed when Firefox restarts.
+
+To upgrade, unzip the new version **over the same folder** and click the reload button on the extensions page. Chrome / Edge identify an unpacked extension by its folder, so loading it from a different folder would start with empty history.
+
+For unreleased code, download the repository (**Code → Download ZIP**) and load its `extension` folder.
 
 Requires Chrome / Edge 121+ or Firefox 121+.
 

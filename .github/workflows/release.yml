@@ -1,0 +1,42 @@
+# 推送 v 开头的版本标签（比如 v0.4.0）时：跑测试、打包 extension 文件夹、发布到 Releases
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm test
+
+      - name: 检查版本号
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          m=$(node -p "require('./extension/manifest.json').version")
+          if [ "$v" != "$m" ]; then
+            echo "标签 $GITHUB_REF_NAME 和 manifest.json 里的版本 $m 不一致"
+            exit 1
+          fi
+
+      # 插件文件直接放在压缩包根目录：解压后就能加载，Firefox 也能直接选这个压缩包
+      - name: 打包
+        run: cd extension && zip -r -X "../tab-trail-${GITHUB_REF_NAME}.zip" .
+
+      - name: 发布
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          awk -v v="$v" '$0 == "## " v { on = 1; next } /^## / { on = 0 } on' CHANGELOG.md > notes.md
+          cat .github/release-notes-footer.md >> notes.md
+          gh release create "$GITHUB_REF_NAME" "tab-trail-${GITHUB_REF_NAME}.zip" \
+            --title "标签脉络 $GITHUB_REF_NAME" --notes-file notes.md

@@ -46,21 +46,29 @@
 
 ## 安装
 
-目前还没有上架应用商店，需要从源码加载（只需几步，不用安装任何开发工具）。
+目前还没有上架应用商店，需要手动加载（只需几步，不用安装任何开发工具）。
 
-先下载：点这个页面上方绿色的 **Code → Download ZIP**，解压到一个固定的位置（加载后不要删除或移动这个文件夹）。也可以用 `git clone`。
+先下载：到 **[Releases 页面](https://github.com/t44460298-dotcom/tab-trail/releases/latest)** 下载最新的 `tab-trail-v*.zip`，右键 →「全部解压缩」，放到一个固定的位置（加载后不要删除或移动这个文件夹）。
 
 ### Chrome / Edge
 
 1. 地址栏打开 `chrome://extensions`（Edge 打开 `edge://extensions`）
 2. 打开「开发者模式」（Chrome 在右上角，Edge 在左侧）
-3. 点「加载解压缩的扩展」，选择项目里的 `extension` 文件夹
+3. 点「加载解压缩的扩展」，选择解压出来的文件夹（里面直接就是 `manifest.json`）
 4. 点工具栏上的拼图图标，把「标签脉络」固定到工具栏
 
 ### Firefox
 
 1. 地址栏打开 `about:debugging#/runtime/this-firefox`
-2. 点「临时载入附加组件」，选择 `extension/manifest.json`
+2. 点「临时载入附加组件」，直接选下载的 zip 文件（或者解压后的 `manifest.json`）
+
+### 升级
+
+把新版本解压后**覆盖到原来的文件夹**，再到扩展管理页点一下插件卡片上的刷新按钮。记录保存在浏览器里，不会丢。
+
+> 一定要覆盖原来的文件夹。Chrome / Edge 是按文件夹位置区分插件的，换一个位置加载，会被当成另一个插件，原来的记录就看不到了。
+
+想用还没发布的最新代码：点这个页面上方绿色的 **Code → Download ZIP** 下载源码，加载时选其中的 `extension` 文件夹。
 
 > Firefox 用这种方式加载的插件，**重启浏览器后会消失**。想长期使用，可以把插件提交到 addons.mozilla.org 做「自行分发」签名（免费，不会公开上架）。也可以改用 Firefox Developer Edition，在 `about:config` 里把 `xpinstall.signatures.required` 设为 `false`。
 >
