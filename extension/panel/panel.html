@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>标签脉络</title>
+  <link rel="stylesheet" href="theme.css">
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <header>
+    <div class="top">
+      <button id="wsBtn" class="ws-btn" title="切换工作区">
+        <span id="wsDot" class="ws-dot"></span>
+        <span id="wsName">…</span>
+        <span class="caret"></span>
+      </button>
+      <input id="wsRename" class="ws-rename" hidden maxlength="40">
+      <button id="nextUnread" class="icon" title="跳到下一篇未看（N）"></button>
+      <button id="locate" class="icon" title="定位当前标签"></button>
+      <button id="moreBtn" class="icon" title="更多"></button>
+    </div>
+    <div class="search">
+      <span id="qIcon" class="search-icon"></span>
+      <input id="q" type="text" placeholder="搜索标题或网址" autocomplete="off" spellcheck="false">
+      <kbd id="qHint" title="按 / 开始搜索">/</kbd>
+      <button id="qClear" class="q-clear" title="清空（Esc）" hidden></button>
+    </div>
+    <nav id="filters" class="filters"></nav>
+  </header>
+  <main id="tree" tabindex="-1"></main>
+  <footer id="crumbs" class="crumbs" hidden></footer>
+  <div id="card" class="card" hidden></div>
+  <div id="menu" class="menu" hidden></div>
+  <div id="toast" class="toast" hidden></div>
+  <script src="titles.js"></script>
+  <script src="common.js"></script>
+  <script src="panel.js"></script>
+</body>
+</html>

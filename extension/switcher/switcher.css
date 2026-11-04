@@ -1,0 +1,114 @@
+/* 标签脉络 · 快速搜索框（颜色和基础样式在 ../panel/theme.css） */
+
+body {
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.box {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line);
+}
+.search-icon { color: var(--faint); }
+.search-icon svg { width: 18px; height: 18px; }
+#q {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--fg);
+  font: 16px/1.4 inherit;
+  font-family: inherit;
+}
+#q::placeholder { color: var(--faint); }
+
+.list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.head {
+  padding: 8px 10px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--faint);
+}
+
+.item {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  column-gap: 11px;
+  align-items: center;
+  padding: 7px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.item.sel { background: var(--sel); }
+.item .fav { margin-top: 0; }
+.item .t {
+  font-size: 14px;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.item.off .t { color: var(--muted); }
+.item.off .fav { opacity: .5; filter: grayscale(1); }
+.item .s {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 1px;
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.item .s .ws-dot { width: 8px; height: 8px; border-radius: 2px; }
+.item .s .via { overflow: hidden; text-overflow: ellipsis; font-style: italic; }
+.item .s .note { overflow: hidden; text-overflow: ellipsis; color: var(--fg2); }
+.item .s .now { color: var(--green); font-weight: 600; }
+.item .s .new { color: var(--accent); font-weight: 600; }
+.item .r {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--faint);
+}
+.item .r .star { color: var(--star); font-size: 13px; }
+.item .r .enter { display: none; color: var(--muted); }
+.item.sel .r .enter { display: inline; }
+
+.empty {
+  padding: 48px 20px;
+  text-align: center;
+  color: var(--muted);
+  line-height: 1.8;
+}
+
+.foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.foot kbd { height: 18px; line-height: 15px; min-width: 18px; }
+.grow { flex: 1; }

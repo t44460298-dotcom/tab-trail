@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.zip
+*.xpi
+.DS_Store
+Thumbs.db
+
+# 本机部署记录：里面有浏览器用户名、本地路径等个人信息，不公开
+部署记录*.md
