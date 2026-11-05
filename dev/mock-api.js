@@ -142,8 +142,17 @@
         if (msg.into) { for (const x of Object.values(nodes)) if (ws[x.ws]?.win === msg.into) delete nodes[x.id]; for (const k in ws) if (ws[k].win === msg.into) delete ws[k]; }
         w.win = msg.into || 50;
         w.stashed = 0;
-        for (const x of Object.values(nodes)) if (x.ws === w.id && x.st === 'stashed') { x.st = 'open'; x.tab = ++tabSeq; }
-        break;
+        const scope = new Set([msg.only]);
+        if (msg.only) for (const x of Object.values(nodes)) if (scope.has(x.parent)) scope.add(x.id);
+        let count = 0;
+        for (const x of Object.values(nodes)) {
+          if (x.ws !== w.id || x.st !== 'stashed') continue;
+          if (msg.only && !scope.has(x.id)) { if (!x.parent) { x.stashedAt = Date.now() - 3600e3; x.fold = true; } continue; }
+          x.st = 'open'; x.tab = ++tabSeq; count++;
+          x.sleep = count > 1 ? true : undefined;   // 只有一个真正加载
+        }
+        emit();
+        return count;
       }
       case 'deleteWs': for (const x of Object.values(nodes)) if (x.ws === msg.ws) delete nodes[x.id]; delete ws[msg.ws]; break;
       case 'star': n.star = msg.star; break;

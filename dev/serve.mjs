@@ -10,6 +10,7 @@ const types = {
   '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.png': 'image/png',
+  '.md': 'text/plain; charset=utf-8',
 };
 
 http.createServer((req, res) => {

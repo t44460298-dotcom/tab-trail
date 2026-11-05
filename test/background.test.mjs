@@ -16,6 +16,9 @@ function view(b) {
 }
 
 const url = name => 'https://papers.test/' + name;
+const LAZY = 'chrome-extension://test/lazy/lazy.html?';
+// 占位页地址 → 它代表的真实网址
+const realUrl = u => (u.startsWith(LAZY) ? new URL(u).searchParams.get('u') : u);
 
 // 读文献：A 里打开 B C D，看 B；B 里打开 E F G，看 F
 async function readingSession(opts = {}) {
@@ -401,7 +404,7 @@ const tests = {
     const v = view(b);
     assert.equal(b.wins.size, 2, '没有多开第三个窗口');
     assert.equal(v.s.ws[g].win, empty.id, '就在这个窗口里');
-    const urls = b.wins.get(empty.id).tabs.map(id => b.tabs.get(id).url);
+    const urls = b.wins.get(empty.id).tabs.map(id => realUrl(b.tabs.get(id).url));
     assert.deepEqual(urls, ['B', 'E', 'F', 'G'].map(url), '新标签页被换成了这组标签');
     assert.equal(v.parentOf('F'), 'B');
     assert.equal(v.ws.length, 2, '空窗口原来的工作区并掉了');
@@ -410,6 +413,72 @@ const tests = {
     await bg.settle();
     await b.send({ type: 'restoreWs', ws: g2, into: 1 }); await bg.settle();
     assert.equal(b.wins.size, 3, '当前窗口里有东西，就开新窗口');
+  },
+
+  async '打开保存的组：只加载最近看过的那一个，其余的点开才加载'() {
+    const { b, bg, clock, t } = await readingSession();
+    b.activate(t.E); await bg.settle();
+    clock.advance(5 * SEC);
+    b.activate(t.F); await bg.settle();   // E 是最近看完的那篇（F 正在看，还没结算）
+    const g = (await b.send({ type: 'saveAsGroup', id: view(b).byTitle('B').id, name: '组' })).r;
+    await bg.settle();
+    clock.advance(60 * MIN);
+    const r = await b.send({ type: 'restoreWs', ws: g }); await bg.settle();
+    assert.equal(r.r, 4);
+    const v = view(b);
+    const win = v.s.ws[g].win;
+    const tabs = b.wins.get(win).tabs.map(id => b.tabs.get(id));
+    const loaded = tabs.filter(x => !x.url.startsWith(LAZY));
+    assert.equal(loaded.length, 1, '只有一个真正加载');
+    assert.ok(loaded[0].active, '加载的那个就是切过去的那个');
+    for (const x of ['B', 'E', 'F', 'G']) {
+      const n = v.byTitle(x);
+      assert.equal(n.url, url(x), x + ' 记录里还是真实网址');
+      assert.equal(n.title, '标题 ' + x, x + ' 标题没被占位页弄乱');
+    }
+    const focus = v.nodes.find(n => n.tab === loaded[0].id);
+    assert.ok(['E', 'F'].includes(focus.title.slice(3)), '切过去的是最近看过的那篇');
+    assert.equal(v.nodes.filter(n => n.ws === g && n.sleep).length, 3, '没加载的算作休眠');
+    // 点开一个没加载的：占位页换成真网页，记录不变，也不算一次跳转
+    const lazyTab = tabs.find(x => x.url.startsWith(LAZY));
+    b.activate(lazyTab.id);
+    b.navigate(lazyTab.id, realUrl(lazyTab.url)); await bg.settle();
+    const n = view(b).nodes.find(x => x.tab === lazyTab.id);
+    assert.equal(n.sleep, undefined, '加载后不再算休眠');
+    assert.equal(n.hist, undefined, '占位页不算跳转记录');
+    assert.equal(view(b).nodes.length, 7, '没有多出节点');
+  },
+
+  async '只打开组里的一棵树，其余的留在树上可以一键恢复'() {
+    const { b, bg } = await readingSession();
+    const ws1 = view(b).ws[0].id;
+    await b.send({ type: 'stashWs', ws: ws1 }); await bg.settle();
+    const r = await b.send({ type: 'restoreWs', ws: ws1, only: view(b).byTitle('B').id }); await bg.settle();
+    assert.equal(r.r, 4, '只开了 B 这一棵（B E F G）');
+    const v = view(b);
+    assert.equal(v.byTitle('C').st, 'stashed', 'C 还收着');
+    assert.equal(v.byTitle('A').stashedAt > 0, true, '最上层 A 标成可恢复的分支');
+    assert.equal(v.byTitle('F').st, 'open');
+  },
+
+  async '浏览器重启时恢复出来的占位页标签，也能按真实网址接回'() {
+    const { b, bg, clock } = await readingSession();
+    const g = (await b.send({ type: 'saveAsGroup', id: view(b).byTitle('B').id, name: '组' })).r;
+    await bg.settle();
+    await b.send({ type: 'restoreWs', ws: g }); await bg.settle();
+    const ids = Object.fromEntries(['B', 'E', 'F', 'G'].map(x => [x, view(b).byTitle(x).id]));
+    const urls = [...b.tabs.values()].filter(x => x.windowId === view(b).s.ws[g].win).map(x => x.url);
+    clock.advance(8 * 60 * MIN);
+    const b2 = createBrowser({ local: b.store.local });
+    b2.openWindow(urls);   // 浏览器恢复了上次的标签，里面有占位页
+    const bg2 = bootBackground(b2, clock, BG);
+    await bg2.settle();
+    const v = view(b2);
+    for (const x of ['B', 'E', 'F', 'G']) {
+      assert.equal(v.byTitle(x).id, ids[x], x + ' 接回原节点');
+      assert.equal(v.byTitle(x).st, 'open');
+    }
+    assert.equal(v.parentOf('F'), 'B');
   },
 
   async '手动休眠：正在看的不动，点开后自动醒来'() {

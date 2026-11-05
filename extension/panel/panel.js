@@ -89,7 +89,7 @@ const FONT_SIZES = [['s', '小'], ['m', '中'], ['l', '大']];
   api.storage.onChanged.addListener((changes, area) => {
     if (area === 'local' && changes[KEY]) {
       state = changes[KEY].newValue;
-      render();
+      scheduleRender();
     }
   });
   state = (await api.storage.local.get(KEY))[KEY] || null;
@@ -169,10 +169,13 @@ function seenBefore(n) {
   return s && s.n !== n ? s : null;
 }
 
+// 一个节点下面的全部节点。每一行都要用好几次，按节点记下来，一次重画只算一遍
 function descendants(n, view) {
+  view.desc ??= new Map();
+  if (view.desc.has(n.id)) return view.desc.get(n.id);
   const out = [];
-  const walk = x => (view.kids.get(x.id) || []).forEach(c => { out.push(c); walk(c); });
-  walk(n);
+  for (const c of view.kids.get(n.id) || []) out.push(c, ...descendants(c, view));
+  view.desc.set(n.id, out);
   return out;
 }
 
@@ -202,6 +205,14 @@ function wsLabel(id, here) {
 const canSleep = (n, view) => isLive(n) && !n.sleep && n !== view.active;
 
 // ---------- 渲染 ----------
+
+// 一次打开很多标签时，数据会在一秒里变好多次。合并成每一帧最多重画一次，侧边栏就不会一直闪、拖慢浏览器
+let renderQueued = false;
+function scheduleRender() {
+  if (renderQueued) return;
+  renderQueued = true;
+  requestAnimationFrame(() => { renderQueued = false; render(); });
+}
 
 function render() {
   if (editing || dragging) { pendingRender = true; return; }
@@ -509,7 +520,7 @@ function aside(n, view, o) {
     s.onclick = e => { e.stopPropagation(); send('focus', { id: dups[0].id }); };
   }
   if (o.live && n.sleep) {
-    const s = span('sleep', '', '休眠中：已释放内存，点开时会重新加载');
+    const s = span('sleep', '', '没加载（不占内存），点开时才加载');
     s.innerHTML = ICONS.moon;
   }
   if (n.stashedAt) {
@@ -517,7 +528,7 @@ function aside(n, view, o) {
     b.className = 'pill';
     b.textContent = '恢复';
     b.title = '重新打开这个分支里收起的标签';
-    b.onclick = e => { e.stopPropagation(); send('restoreBranch', { id: n.id }); };
+    b.onclick = e => { e.stopPropagation(); restoreBranch(n); };
     a.append(b);
   } else if (o.active) {
     span('now', '在看');
@@ -609,11 +620,28 @@ function groupSummary(w) {
   return { view, count, trees };
 }
 
-function openGroup(w) {
+// 打开一组（或只打开其中一棵树 only）。后台只加载最近看过的那一个，其余的点开才加载
+let opening = false;
+async function openGroup(w, only) {
+  if (opening) return;   // 防止连点打开两遍
+  opening = true;
   const into = currentIsEmpty() ? myWin : undefined;
-  send('restoreWs', { ws: w.id, into });
-  if (!into) toast(`「${w.name}」在新窗口里打开了`);
+  toast(`正在打开「${w.name}」…`, 10e3);
+  try {
+    const r = await send('restoreWs', { ws: w.id, into, only });
+    if (r?.ok) {
+      const where = into ? '' : '，在新窗口里';
+      toast(r.r > 1 ? `已打开 ${r.r} 个标签${where}。只加载了最近看的那一个，其余的点到时再加载` : `已打开「${w.name}」${where}`, 4000);
+    }
+  } finally {
+    opening = false;
+  }
   if (mode === 'saved') setMode('tree');
+}
+
+async function restoreBranch(n) {
+  const r = await send('restoreBranch', { id: n.id });
+  if (r?.ok && r.r > 1) toast(`已恢复 ${r.r} 个标签。只加载了最近看的那一个，其余的点到时再加载`, 4000);
 }
 
 function groupCard(w, { compact = false, terms } = {}) {
@@ -650,6 +678,11 @@ function groupCard(w, { compact = false, terms } = {}) {
     title.className = 'group-title';
     highlight(title, displayTitle(t.n), terms);
     item.append(favicon(t.n), title);
+    if (trees.length > 1) {
+      item.classList.add('pick');
+      item.title = '只打开这一棵树，其余的继续收着';
+      item.onclick = e => { e.stopPropagation(); openGroup(w, t.n.id); };
+    }
     if (t.size > 1) {
       const more = document.createElement('span');
       more.className = 'group-sub';
@@ -664,6 +697,12 @@ function groupCard(w, { compact = false, terms } = {}) {
     rest.className = 'group-rest';
     rest.textContent = `还有 ${trees.length - shown.length} 棵树…`;
     list.append(rest);
+  }
+  if (trees.length > 1 && !compact) {
+    const tip = document.createElement('div');
+    tip.className = 'group-tip';
+    tip.textContent = '点其中一棵，只打开那一棵';
+    list.append(tip);
   }
   el.append(head, time, list);
 
@@ -1229,7 +1268,7 @@ function nodeMenu(n, view, x, y) {
     items.push({ icon: 'dup', label: '跳到另一个相同的标签', sub: wsLabel(dups[0].ws, n.ws), run: () => send('focus', { id: dups[0].id }) });
     items.push({ icon: 'close', label: '关闭这个重复的', run: () => send('close', { id: n.id }) });
   }
-  if (stashCount && (stashCount > 1 || !live)) items.push({ icon: 'reopen', label: '恢复这个分支', sub: `${stashCount} 个`, run: () => send('restoreBranch', { id: n.id }) });
+  if (stashCount && (stashCount > 1 || !live)) items.push({ icon: 'reopen', label: '恢复这个分支', sub: `${stashCount} 个`, run: () => restoreBranch(n) });
   items.push('-');
   items.push(n.star
     ? { icon: 'starOn', label: '取消星标', sub: 'S', run: () => send('star', { id: n.id, star: false }) }
@@ -1447,12 +1486,12 @@ function startRename() {
 }
 
 let toastTimer = null;
-function toast(msg) {
+function toast(msg, ms = 2200) {
   const t = $('#toast');
   t.textContent = msg;
   t.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.hidden = true; }, 2200);
+  toastTimer = setTimeout(() => { t.hidden = true; }, ms);
 }
 
 // ---------- 事件绑定 ----------

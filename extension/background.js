@@ -90,7 +90,20 @@ function save(immediate) {
 
 function now() { return Date.now(); }
 function newId(prefix) { state.seq += 1; return prefix + state.seq.toString(36); }
-function tabUrl(tab) { return tab.url || tab.pendingUrl || ''; }
+// 「点开才加载」的占位页（lazy/lazy.html?u=真实网址&t=标题）：一次打开很多标签时，没要看的先打开它，切过去才加载真网页。
+// 占位页的网址一律当作它代表的真实网址看待，这样记录、去重、重启后接回都不受影响；占位中的标签算作休眠
+const LAZY_PAGE = api.runtime.getURL('lazy/lazy.html');
+const isLazy = url => !!url && url.startsWith(LAZY_PAGE);
+function realUrl(url) {
+  if (!isLazy(url)) return url;
+  try { return new URL(url).searchParams.get('u') || url; } catch { return url; }
+}
+const lazyUrl = n => LAZY_PAGE + '?u=' + encodeURIComponent(n.url) + '&t=' + encodeURIComponent(n.title || n.url);
+function tabUrl(tab) { return realUrl(tab.url || tab.pendingUrl || ''); }
+const isAsleep = tab => !!tab.discarded || isLazy(tab.url || tab.pendingUrl);
+// 占位页还没打开时，浏览器报的标题可能只是那串插件网址，不能拿来当标题
+const lazyTitle = tab => isLazy(tab.url || tab.pendingUrl) && (/^[a-z-]+:\/\//i.test(tab.title || '') || (tab.title || '').includes('lazy.html'));
+const recency = n => Math.max(n.last || 0, n.seen || 0);
 function cleanIcon(icon) { return icon && icon.length < 4096 ? icon : ''; }
 // 同一级里的先后：手动拖动过的按 order，没拖过的按打开时间
 const sortKey = n => n.order ?? n.created;
@@ -232,7 +245,8 @@ function attach(n, tab) {
   delete n.young;
   const url = tabUrl(tab);
   if (url && !isBlank(url)) n.url = url;
-  if (tab.title && !isBlank(url)) n.title = tab.title;
+  if (tab.title && !isBlank(url) && !lazyTitle(tab)) n.title = tab.title;
+  setSleep(n, isAsleep(tab));
   if (tab.favIconUrl) n.icon = cleanIcon(tab.favIconUrl);
 }
 
@@ -356,7 +370,7 @@ function reconcile(wins, fresh) {
       const n = nodeByTab(tab.id);
       if (!n) continue;
       if (w) n.ws = w.id;
-      setSleep(n, tab.discarded);
+      setSleep(n, isAsleep(tab));
     }
   }
 
@@ -470,9 +484,9 @@ api.tabs.onUpdated.addListener((tabId, info, tab) => run(() => {
     n.url = url;
     changed = true;
   }
-  if (tab.title && tab.title !== n.title) { n.title = tab.title; changed = true; }
-  if (info.discarded !== undefined && !!info.discarded !== !!n.sleep) { setSleep(n, info.discarded); changed = true; }
-  if (info.favIconUrl !== undefined && cleanIcon(info.favIconUrl) !== n.icon) { n.icon = cleanIcon(info.favIconUrl); changed = true; }
+  if (tab.title && tab.title !== n.title && !lazyTitle(tab)) { n.title = tab.title; changed = true; }
+  if (isAsleep(tab) !== !!n.sleep) { setSleep(n, isAsleep(tab)); changed = true; }
+  if (info.favIconUrl !== undefined && !isLazy(tab.url) && cleanIcon(info.favIconUrl) !== n.icon) { n.icon = cleanIcon(info.favIconUrl); changed = true; }
   return changed;
 }));
 
@@ -511,8 +525,8 @@ api.tabs.onReplaced?.addListener((addedId, removedId) => {
   // 「已休眠」的通知有可能比换 id 先到，补查一次
   api.tabs.get(addedId).then(tab => run(() => {
     const n = nodeByTab(addedId);
-    if (!n || !!n.sleep === !!tab.discarded) return false;
-    setSleep(n, tab.discarded);
+    if (!n || !!n.sleep === isAsleep(tab)) return false;
+    setSleep(n, isAsleep(tab));
   })).catch(() => {});
 });
 
@@ -532,7 +546,7 @@ async function sleepIdle() {
   const tabs = await api.tabs.query({ active: false, pinned: false, audible: false, discarded: false });
   for (const tab of tabs) {
     const n = nodeByTab(tab.id);
-    if (!n || isBlank(n.url) || tab.autoDiscardable === false) continue;
+    if (!n || n.sleep || isBlank(n.url) || tab.autoDiscardable === false) continue;   // 占位中的本来就没加载
     if (Math.max(n.last || 0, n.seen || 0, n.created || 0) > limit) continue;
     try { await api.tabs.discard(tab.id); } catch {}
   }
@@ -597,13 +611,36 @@ async function openNode(n, winId, { active = true, nearParent = true } = {}) {
       if (pt.windowId === target) props.index = pt.index + 1;
     } catch {}
   }
-  if (IS_FIREFOX && !active) { props.discarded = true; props.title = n.title || n.url; }
+  // 不是马上要看的：先不加载。Firefox 自带「不加载地打开」；Chrome / Edge 先打开占位页，切过去时才加载
+  if (!active && IS_FIREFOX) { props.discarded = true; props.title = n.title || n.url; }
+  else if (!active && /^https?:/i.test(n.url)) props.url = lazyUrl(n);
   addPending(n.url);
   try {
     const tab = await api.tabs.create(props);
     attach(n, tab);
   } finally {
     dropPending(n.url);
+  }
+}
+
+// 最近看过的那一个（都没看过就是第一个）
+const pickFocus = list => list.reduce((a, b) => (recency(b) > recency(a) ? b : a), list[0]);
+
+// 按顺序打开一批节点：focus 那一个切过去并加载，其余的都先不加载
+async function openList(list, winId, focus = pickFocus(list)) {
+  for (const n of list) {
+    try { await openNode(n, winId, { active: n === focus, nearParent: false }); }
+    catch (e) { console.warn('[标签脉络] 打不开', n.url, e); }
+  }
+}
+
+// 关掉窗口里原来的新标签页。Edge 有时不让马上关刚打开、还没加载完的新标签页，就等一下再试，实在不行就留着
+async function removeQuietly(tabIds) {
+  for (const id of tabIds) {
+    for (let i = 0; i < 4; i++) {
+      try { await api.tabs.remove(id); break; }
+      catch { await new Promise(r => setTimeout(r, 400)); }
+    }
   }
 }
 
@@ -692,20 +729,14 @@ const actions = {
     await closeTabs(tabIds);
   },
 
+  // 恢复一个分支：只有最近看过的那一个马上加载，其余的点开时再加载，免得一下子全开卡住
   async restoreBranch({ id, win }) {
     const root = need(id);
-    const list = subtree(root).filter(n => n.st === 'stashed' || (n.st === 'open' && n.tab == null));
+    const list = subtree(root).filter(n => (n.st === 'stashed' || (n.st === 'open' && n.tab == null)) && !isBlank(n.url));
     delete root.stashedAt;
     root.fold = false;
-    let first = true;
-    for (const n of list) {
-      try {
-        await openNode(n, win, { active: first, nearParent: false });
-        first = false;
-      } catch (e) {
-        console.warn('[标签脉络] 打不开', n.url, e);
-      }
-    }
+    await openList(list, win);
+    return list.length;
   },
 
   // 从记录里删掉（只删不在标签栏里的；分支下还打开着的标签会往上挪一级）
@@ -860,51 +891,62 @@ const actions = {
     await api.windows.remove(win);
   },
 
-  // 恢复工作区：开一个新窗口，按树的顺序重新打开收起的标签
-  // into：如果传的是一个空窗口（只有新标签页），就直接在这个窗口里打开，不再多开一个
-  async restoreWs({ ws, into }) {
+  // 恢复工作区：按树的顺序重新打开收起的标签。为了不卡，只有最近看过的那一个马上加载，其余的点开时再加载。
+  // into：如果传的是一个空窗口（只有新标签页），就直接在这个窗口里打开；否则开一个新窗口
+  // only：只打开其中一棵树（节点 id），其余的继续收着，在树上显示成可恢复的分支
+  async restoreWs({ ws, into, only }) {
     const w = state.ws[ws];
     if (!w) return;
     if (w.win != null) { await api.windows.update(w.win, { focused: true }); return; }
-    const list = wsInOrder(w).filter(n => (n.st === 'stashed' || (n.st === 'open' && n.tab == null)) && !isBlank(n.url));
-    const here = into != null ? wsOfWindow(into) : null;
-    if (here && here !== w && all().every(n => n.ws !== here.id || isBlank(n.url))) {
-      const blankTabs = all().filter(n => n.ws === here.id && n.tab != null).map(n => n.tab);
+    const reopen = n => (n.st === 'stashed' || (n.st === 'open' && n.tab == null)) && !isBlank(n.url);
+    const list = (only ? subtree(need(only)) : wsInOrder(w)).filter(reopen);
+    const focus = pickFocus(list);
+    const isEmptyWin = id => { const h = wsOfWindow(id); return !h || h === w || all().every(n => n.ws !== h.id || isBlank(n.url)); };
+    let win, blankTabs = [], focusTab = null;
+    if (into != null && isEmptyWin(into)) {
+      win = into;
+      blankTabs = (await api.tabs.query({ windowId: win })).map(t => t.id);   // 原来的新标签页，打开完就关掉
+    } else {
+      // 新窗口直接用要看的那一篇打开，不留多余的新标签页（Edge 不让马上关掉刚开的新标签页）
+      if (focus) addPending(focus.url);
+      try {
+        const created = await api.windows.create({ focused: true, ...(focus ? { url: focus.url } : {}) });
+        win = created.id;
+        focusTab = focus ? created.tabs?.[0] || null : null;
+      } catch {
+        const created = await api.windows.create({ focused: true });   // 网址打不开（比如 Firefox 里的 about: 页面）就先开空窗口
+        win = created.id;
+        blankTabs = (created.tabs || []).map(t => t.id);
+      } finally {
+        if (focus) dropPending(focus.url);
+      }
+    }
+    const here = wsOfWindow(win);
+    if (here && here !== w) {
       for (const n of all()) if (n.ws === here.id) n.ws = w.id;
       delete state.ws[here.id];
-      w.win = into;
-      w.stashed = 0;
-      for (const n of all()) if (n.ws === w.id && n.stashedAt) { delete n.stashedAt; n.fold = false; }
-      let opened = 0;
-      for (const n of list) {
-        try { await openNode(n, into, { active: !opened, nearParent: false }); opened++; }
-        catch (e) { console.warn('[标签脉络] 打不开', n.url, e); }
-      }
-      if (opened) await closeTabs(blankTabs);   // 原来那个空的新标签页用不着了
-      return;
     }
-    const first = list.shift();
-    let win, firstOpened = false;
-    if (first) addPending(first.url);
-    try {
-      win = await api.windows.create({ focused: true, url: first?.url });
-      firstOpened = !!first;
-    } catch {
-      win = await api.windows.create({ focused: true });   // 网址打不开（比如 Firefox 里的 about: 页面）就先开空窗口
-    } finally {
-      if (first) dropPending(first.url);
-    }
-    const auto = wsOfWindow(win.id);
-    if (auto && auto !== w) mergeWs(auto, w);
-    w.win = win.id;
+    const savedAt = w.stashed || now();
+    w.win = win;
     w.stashed = 0;
     for (const n of all()) if (n.ws === w.id && n.stashedAt) { delete n.stashedAt; n.fold = false; }
-    if (firstOpened && win.tabs?.[0]) attach(first, win.tabs[0]);
-    else if (first) list.unshift(first);
-    for (const n of list) {
-      try { await openNode(n, win.id, { active: false, nearParent: false }); }
-      catch (e) { console.warn('[标签脉络] 打不开', n.url, e); }
+    if (only) {
+      // 没打开的那些树，标成「已收起」的分支，以后在树上一键恢复
+      const roots = all().filter(n => n.ws === w.id && (!n.parent || state.nodes[n.parent]?.ws !== w.id));
+      for (const r of roots) {
+        if (r.id !== only && subtree(r).some(reopen)) { r.stashedAt = savedAt; r.fold = true; }
+      }
     }
+    if (focusTab) attach(focus, focusTab);
+    save(true);
+    if (focusTab) {
+      await openList(list.filter(n => n !== focus), win, null);
+      try { await api.tabs.move(focusTab.id, { windowId: win, index: list.indexOf(focus) }); } catch {}   // 挪回树里的位置
+    } else {
+      await openList(list, win, focus);
+    }
+    if (list.length && blankTabs.length) await removeQuietly(blankTabs);
+    return list.length;
   },
 
   // 把一棵树另存为一组：变成一个起好名字的已收起工作区，其中打开的标签会关掉，以后从「已保存」里挑出来打开

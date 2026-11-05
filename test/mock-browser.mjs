@@ -33,7 +33,9 @@ export function createBrowser({ local = {}, firefoxStyle = false, eventsAfterCre
   };
   const alarms = new Map();
 
-  const title = url => (url.startsWith('http') ? '标题 ' + url.split('/').pop() : '新标签页');
+  // 「点开才加载」的占位页会把标题设成它带着的原标题
+  const title = url => (url.includes('/lazy/lazy.html?') ? new URL(url).searchParams.get('t')
+    : url.startsWith('http') ? '标题 ' + url.split('/').pop() : '新标签页');
   const reindex = w => w.tabs.forEach((id, i) => { tabs.get(id).index = i; });
   const later = fn => (eventsAfterCreate ? setImmediate(fn) : fn());
 
@@ -106,8 +108,10 @@ export function createBrowser({ local = {}, firefoxStyle = false, eventsAfterCre
     reindex(from);
     const to = wins.get(winId);
     if (index == null || index < 0 || index > to.tabs.length) to.tabs.push(id); else to.tabs.splice(index, 0, id);
+    const sameWindow = from === to;
     t.windowId = winId;
     reindex(to);
+    if (sameWindow) return;   // 同一个窗口里挪位置：不算换窗口，选中的标签也不变
     ev.tabs.onAttached.fire(id, { newWindowId: winId, newPosition: t.index });
     if (t.active) {
       t.active = false;
@@ -140,7 +144,7 @@ export function createBrowser({ local = {}, firefoxStyle = false, eventsAfterCre
       async get(id) { if (!tabs.has(id)) throw new Error('No tab with id ' + id); return clone(tabs.get(id)); },
       async query(q = {}) { return [...tabs.values()].filter(t => matches(t, q)).map(clone); },
       async move(ids, { windowId, index }) {
-        for (const id of [].concat(ids)) moveTab(id, windowId, index);
+        for (const id of [].concat(ids)) moveTab(id, windowId ?? tabs.get(id).windowId, index);   // 不给窗口就是在原窗口里挪位置
       },
       async discard(id) {
         const t = tabs.get(id);
@@ -203,6 +207,8 @@ export function bootBackground(browser, clock, file) {
   const ctx = {
     chrome: browser.api,
     console,
+    URL,
+    URLSearchParams,
     Date: FakeDate,
     setTimeout: fn => { const t = { fn }; timers.push(t); return t; },
     clearTimeout: t => { const i = timers.indexOf(t); if (i >= 0) timers.splice(i, 1); },
