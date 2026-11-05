@@ -372,6 +372,46 @@ const tests = {
     assert.equal(view(b).nodes.find(x => x.id === n.id).alias, undefined, '清空就恢复原标题');
   },
 
+  async '另存为一组：整棵树变成一个起好名字的已收起工作区'() {
+    const { b, bg, t } = await readingSession();
+    const B = view(b).byTitle('B');
+    const r = await b.send({ type: 'saveAsGroup', id: B.id, name: '预训练相关' }); await bg.settle();
+    assert.ok(r.ok, r.error);
+    const v = view(b);
+    const g = v.s.ws[r.r];
+    assert.equal(g.name, '预训练相关');
+    assert.equal(g.win, null);
+    assert.ok(g.stashed);
+    for (const x of ['B', 'E', 'F', 'G']) {
+      assert.equal(v.byTitle(x).ws, g.id, x + ' 进了新组');
+      assert.equal(v.byTitle(x).st, 'stashed', x + ' 已收起');
+    }
+    assert.equal(v.parentOf('F'), 'B', '结构不变');
+    assert.ok(b.tabs.has(t.A) && !b.tabs.has(t.B), 'A 还开着，B 分支的标签关了');
+    assert.equal(b.wins.size, 1);
+  },
+
+  async '在空窗口里打开保存的组：不多开窗口，原来的新标签页关掉'() {
+    const { b, bg } = await readingSession();
+    const g = (await b.send({ type: 'saveAsGroup', id: view(b).byTitle('B').id, name: '预训练相关' })).r;
+    await bg.settle();
+    const empty = b.openWindow(); await bg.settle();   // 一个只有新标签页的窗口
+    const r = await b.send({ type: 'restoreWs', ws: g, into: empty.id }); await bg.settle();
+    assert.ok(r.ok, r.error);
+    const v = view(b);
+    assert.equal(b.wins.size, 2, '没有多开第三个窗口');
+    assert.equal(v.s.ws[g].win, empty.id, '就在这个窗口里');
+    const urls = b.wins.get(empty.id).tabs.map(id => b.tabs.get(id).url);
+    assert.deepEqual(urls, ['B', 'E', 'F', 'G'].map(url), '新标签页被换成了这组标签');
+    assert.equal(v.parentOf('F'), 'B');
+    assert.equal(v.ws.length, 2, '空窗口原来的工作区并掉了');
+    // 不是空窗口时，还是开新窗口
+    const g2 = (await b.send({ type: 'saveAsGroup', id: view(b).byTitle('C').id, name: 'C 组' })).r;
+    await bg.settle();
+    await b.send({ type: 'restoreWs', ws: g2, into: 1 }); await bg.settle();
+    assert.equal(b.wins.size, 3, '当前窗口里有东西，就开新窗口');
+  },
+
   async '手动休眠：正在看的不动，点开后自动醒来'() {
     const { b, bg, t } = await readingSession();
     const ids = ['A', 'B', 'F', 'G'].map(x => view(b).byTitle(x).id);

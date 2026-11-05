@@ -861,11 +861,28 @@ const actions = {
   },
 
   // 恢复工作区：开一个新窗口，按树的顺序重新打开收起的标签
-  async restoreWs({ ws }) {
+  // into：如果传的是一个空窗口（只有新标签页），就直接在这个窗口里打开，不再多开一个
+  async restoreWs({ ws, into }) {
     const w = state.ws[ws];
     if (!w) return;
     if (w.win != null) { await api.windows.update(w.win, { focused: true }); return; }
     const list = wsInOrder(w).filter(n => (n.st === 'stashed' || (n.st === 'open' && n.tab == null)) && !isBlank(n.url));
+    const here = into != null ? wsOfWindow(into) : null;
+    if (here && here !== w && all().every(n => n.ws !== here.id || isBlank(n.url))) {
+      const blankTabs = all().filter(n => n.ws === here.id && n.tab != null).map(n => n.tab);
+      for (const n of all()) if (n.ws === here.id) n.ws = w.id;
+      delete state.ws[here.id];
+      w.win = into;
+      w.stashed = 0;
+      for (const n of all()) if (n.ws === w.id && n.stashedAt) { delete n.stashedAt; n.fold = false; }
+      let opened = 0;
+      for (const n of list) {
+        try { await openNode(n, into, { active: !opened, nearParent: false }); opened++; }
+        catch (e) { console.warn('[标签脉络] 打不开', n.url, e); }
+      }
+      if (opened) await closeTabs(blankTabs);   // 原来那个空的新标签页用不着了
+      return;
+    }
     const first = list.shift();
     let win, firstOpened = false;
     if (first) addPending(first.url);
@@ -888,6 +905,30 @@ const actions = {
       try { await openNode(n, win.id, { active: false, nearParent: false }); }
       catch (e) { console.warn('[标签脉络] 打不开', n.url, e); }
     }
+  },
+
+  // 把一棵树另存为一组：变成一个起好名字的已收起工作区，其中打开的标签会关掉，以后从「已保存」里挑出来打开
+  async saveAsGroup({ id, name }) {
+    const n = need(id);
+    const list = subtree(n);
+    const t = now();
+    const w = { id: newId('w'), name: (name || '').trim().slice(0, 40) || nextWsName(), named: true, win: null, created: t, stashed: t };
+    state.ws[w.id] = w;
+    // 一个打开的都没有（整棵都是已关闭的记录）时，就把它们都算进去，免得存了个空组
+    const anyOpen = list.some(x => x.st !== 'closed');
+    const tabIds = [];
+    for (const x of list) {
+      if (x.tab != null) { tabIds.push(x.tab); detach(x); }
+      if (x.st === 'open' || (!anyOpen && x.st === 'closed')) { x.st = 'stashed'; x.closed = t; }
+      delete x.stashedAt;
+      x.ws = w.id;
+    }
+    n.order = t;
+    n.manual = true;
+    save(true);
+    await closeTabs(tabIds);
+    tidyWs();
+    return w.id;
   },
 
   deleteWs({ ws }) {

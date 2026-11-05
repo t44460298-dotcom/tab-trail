@@ -15,6 +15,7 @@
   --sel: #dde7fb;
   --accent: #2f6ae0;
   --accent-soft: #e3ecfd;
+  --on-accent: #ffffff;
   --green: #16833f;
   --amber: #b25e09;
   --amber-soft: #fbefdf;
@@ -42,6 +43,7 @@
     --sel: #25344c;
     --accent: #6ea0ff;
     --accent-soft: #23314a;
+    --on-accent: #0d1626;
     --green: #4ccb7a;
     --amber: #f0a64a;
     --amber-soft: #3a2c1a;

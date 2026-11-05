@@ -32,6 +32,7 @@ Tab Trail does not replace the tab strip. It adds a **reading tree** in the side
 - **Find anything**: search titles, URLs, notes and in-tab history. Press **`Alt+K` on any page** for a quick switcher. Filters: unread, starred, duplicates, stashed, closed.
 - **Workspaces**: one per window. Name them, switch between them, stash a whole workspace and restore it later. Closing a window stashes its workspace instead of losing it.
 - **Stash and restore**: stash a branch (tabs close, the records stay in the tree) and restore it later with the same structure.
+- **Saved groups**: save a tree as a named group ("Save as group…"), browse all saved groups as cards, and reopen any one later. In a fresh, empty window the panel offers the saved groups right away and opens the one you pick in that window.
 - **Organize**: drag and drop to restructure the tree, move branches between workspaces, rename entries (`F2`, shown only inside Tab Trail), stars and notes, duplicate-tab warnings, cleaner titles (site names like "- YouTube" are removed), PDF detection.
 - **Save memory**: tabs you have not looked at for a while are put to sleep automatically (default: 2 hours).
 - **Export**: a branch or a whole workspace as a Markdown checklist, or as a bookmarks file any browser can import.

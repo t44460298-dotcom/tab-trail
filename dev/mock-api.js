@@ -58,6 +58,24 @@
   add('w3', null, '小户型收纳设计 - 小红书', 'https://www.xiaohongshu.com/explore/1', { st: 'stashed', seen: 5 * D });
   add('w3', null, '岩板餐桌怎么选', 'https://www.zhihu.com/question/2', { st: 'stashed' });
 
+  // 一个已保存的「刷题」工作区
+  ws.w4 = { id: 'w4', name: '刷题 · 华为面试', named: true, win: null, created: now - 2 * D, stashed: now - 14 * H };
+  const P = add('w4', null, '华为面试手撕高频题与备考规划 | Zero2Leetcode', 'https://zero2leetcode.com/huawei', { st: 'stashed', seen: 1 * D });
+  const S1 = add('w4', P, '栈 - 基础题', 'https://zero2leetcode.com/stack', { st: 'stashed', seen: 1 * D });
+  add('w4', S1, '有效的括号字符串 - problem_ide', 'https://zero2leetcode.com/p/20', { st: 'stashed', seen: 1 * D });
+  add('w4', S1, '字符串解码问题 - problem_ide', 'https://zero2leetcode.com/p/394', { st: 'stashed' });
+  const T2 = add('w4', P, '同向双指针', 'https://zero2leetcode.com/two-pointers', { st: 'stashed', seen: 15 * H });
+  add('w4', T2, '最长的无重复字符的子串 - problem_ide', 'https://zero2leetcode.com/p/3', { st: 'stashed', seen: 15 * H });
+  add('w4', T2, '最短覆盖子串 - problem_ide', 'https://zero2leetcode.com/p/76', { st: 'stashed' });
+  add('w4', null, '字母异位词的分组 - problem_ide', 'https://zero2leetcode.com/p/49', { st: 'stashed', seen: 2 * D });
+
+  // 预览「刚打开的空窗口」：网址里加 ?win=9
+  const curWin = Number(new URLSearchParams(location.search).get('win')) || 1;
+  if (curWin === 9 && location.pathname.endsWith('panel.html')) {
+    ws.w9 = { id: 'w9', name: '工作区 3', win: 9, created: now, stashed: 0 };
+    add('w9', null, '新标签页', 'chrome://newtab/', { ago: 0 });
+  }
+
   const state = { v: 1, seq, nodes, ws, act: { 1: { tab: nodes[F].tab, since: now - 4 * M } }, settings: { sleepAfter: 120 } };
   const listeners = [];
   const snapshot = () => JSON.parse(JSON.stringify(state));
@@ -110,6 +128,24 @@
         for (const x of list) x.ws = msg.ws === 'new' ? 'w2' : msg.ws;
         break;
       }
+      case 'saveAsGroup': {
+        const id = 'w' + ++seq;
+        ws[id] = { id, name: msg.name || '新的一组', named: true, win: null, created: Date.now(), stashed: Date.now() };
+        const list = [n];
+        for (let i = 0; i < list.length; i++) list.push(...Object.values(nodes).filter(x => x.parent === list[i].id));
+        for (const x of list) { x.ws = id; if (x.st === 'open') { x.st = 'stashed'; x.tab = null; } }
+        emit();
+        return id;
+      }
+      case 'restoreWs': {
+        const w = ws[msg.ws];
+        if (msg.into) { for (const x of Object.values(nodes)) if (ws[x.ws]?.win === msg.into) delete nodes[x.id]; for (const k in ws) if (ws[k].win === msg.into) delete ws[k]; }
+        w.win = msg.into || 50;
+        w.stashed = 0;
+        for (const x of Object.values(nodes)) if (x.ws === w.id && x.st === 'stashed') { x.st = 'open'; x.tab = ++tabSeq; }
+        break;
+      }
+      case 'deleteWs': for (const x of Object.values(nodes)) if (x.ws === msg.ws) delete nodes[x.id]; delete ws[msg.ws]; break;
       case 'star': n.star = msg.star; break;
       case 'rename': if (msg.name.trim()) n.alias = msg.name.trim(); else delete n.alias; break;
       case 'note': if (msg.note.trim()) n.note = msg.note.trim(); else delete n.note; break;
@@ -130,6 +166,6 @@
       sendMessage: async msg => { console.log('[预览] 操作', msg); return { ok: true, r: apply(msg) }; },
       getURL: p => p,
     },
-    windows: { getCurrent: async () => ({ id: 1 }) },
+    windows: { getCurrent: async () => ({ id: curWin }) },
   };
 })();

@@ -38,6 +38,8 @@ const ICONS = {
   top: svg('<path d="M3 2.5h10M8 13.5V5.5M4.8 8.5 8 5.3l3.2 3.2"/>'),
   font: svg('<path d="M2.5 13 6 3.5 9.5 13M3.7 10h4.6M10.5 13l2-5.5 2 5.5M11 11.5h3"/>', 'stroke-width="1.4"'),
   bar: svg('<path d="M2.5 5h11M2.5 8.5h7M2.5 12h4"/>', 'stroke-width="2"'),
+  saved: svg('<path d="M4.5 2.5h7a1 1 0 0 1 1 1v10L8 10.8l-4.5 2.7v-10a1 1 0 0 1 1-1Z"/>', 'stroke-width="1.5"'),
+  back: svg('<path d="M10 3.5 5.5 8l4.5 4.5"/>', 'stroke-width="1.8"'),
 };
 const TREE_ART = '<svg viewBox="0 0 56 56" fill="none"><rect x="1" y="1" width="54" height="54" rx="14" fill="var(--accent-soft)"/><path d="M19 17v22M19 28h14M19 39h14" stroke="var(--accent)" stroke-width="3" stroke-linecap="round"/><circle cx="19" cy="16" r="4.5" fill="var(--accent)"/><circle cx="37" cy="28" r="4.5" fill="var(--accent)"/><circle cx="37" cy="39" r="4.5" fill="none" stroke="var(--accent)" stroke-width="2.5"/></svg>';
 
@@ -60,6 +62,7 @@ let rows = [];          // 当前能用键盘选中的行：[{ n, el, dim }]
 let lastActive = null;
 let curView = null;
 let IDX = null;         // 全部工作区的索引，见 common.js 的 buildIndex
+let mode = 'tree';      // 'tree' 标签树 | 'saved' 已保存的工作区
 let editing = null;     // 正在写备注的节点；写的时候先不重画，免得输入框被冲掉
 let dragging = null;    // 正在拖动的节点；拖的时候同样先不重画
 let pendingRender = false;
@@ -73,6 +76,7 @@ const FONT_SIZES = [['s', '小'], ['m', '中'], ['l', '大']];
 // ---------- 启动 ----------
 
 (async function init() {
+  $('#savedIcon').innerHTML = ICONS.saved;
   $('#nextUnread').innerHTML = ICONS.nextUnread;
   $('#locate').innerHTML = ICONS.locate;
   $('#moreBtn').innerHTML = ICONS.more;
@@ -147,7 +151,7 @@ function buildView(ws) {
 }
 
 function isUnread(n, view) {
-  if (n.seen) return false;
+  if (n.seen || isBlank(n.url)) return false;   // 新标签页不算「没看」
   if (n === view.active && !view.act.skip) return false;   // 正在看的不算未看
   return true;
 }
@@ -213,6 +217,15 @@ function render() {
   $('#wsName').textContent = ws ? ws.name : '…';
   $('#wsDot').style.background = ws ? wsColor(ws) : '';
   if (!ws) { empty(tree, '正在整理这个窗口的标签…'); $('#filters').replaceChildren(); $('#crumbs').hidden = true; return; }
+  paintSavedButton();
+  $('#q').placeholder = mode === 'saved' ? '搜索已保存的工作区' : '搜索标题或网址';
+  if (mode === 'saved') {
+    $('#filters').replaceChildren();
+    $('#crumbs').hidden = true;
+    renderSaved(tree);
+    tree.scrollTop = scroll;
+    return;
+  }
 
   const view = curView = buildView(ws);
   renderFilters(view);
@@ -269,6 +282,11 @@ function lineSpec(n, depth, cont, last, kidsShown, hasTwisty, view, hl) {
 }
 
 function renderTree(tree, view) {
+  // 刚打开的空窗口（只有新标签页）：直接列出保存的工作区，挑一组在这个窗口里打开
+  if (!view.mine.some(n => !isBlank(n.url)) && savedWorkspaces().length) {
+    renderStartPrompt(tree);
+    return;
+  }
   const vis = new Map();
   const isVis = n => {
     if (vis.has(n.id)) return vis.get(n.id);
@@ -545,6 +563,243 @@ function empty(tree, title, html = '', art = false) {
   d.className = 'empty';
   d.innerHTML = (art ? TREE_ART : '') + `<h3>${title}</h3>` + (html ? `<p>${html}</p>` : '');
   tree.append(d);
+}
+
+// ---------- 已保存的工作区 ----------
+
+// 收起来的工作区（自己收起的、关窗口自动收起的、另存为一组的），最近的在前
+function savedWorkspaces() {
+  return Object.values(state?.ws || {}).filter(w => w.win == null).sort((a, b) => (b.stashed || 0) - (a.stashed || 0));
+}
+
+// 当前窗口里除了新标签页什么都没有
+function currentIsEmpty() {
+  const ws = myWs();
+  return !!ws && !Object.values(state.nodes).some(n => n.ws === ws.id && !isBlank(n.url));
+}
+
+function paintSavedButton() {
+  const count = savedWorkspaces().length;
+  const badge = $('#savedCount');
+  badge.textContent = count;
+  badge.hidden = !count;
+  $('#savedBtn').classList.toggle('on', mode === 'saved');
+  $('#savedBtn').title = count ? `已保存的工作区（${count} 组）` : '已保存的工作区';
+}
+
+function setMode(m) {
+  mode = m;
+  query = '';
+  $('#q').value = '';
+  $('#qClear').hidden = true;
+  $('#qHint').hidden = false;
+  sel = -1;
+  render();
+  $('#tree').scrollTop = 0;
+}
+
+// 一组里有什么：会重新打开的标签数，和最上层的几棵树
+function groupSummary(w) {
+  const view = buildView(w);
+  const reopen = n => (n.st === 'stashed' || (n.st === 'open' && n.tab == null)) && !isBlank(n.url);
+  const count = view.mine.filter(reopen).length;
+  const trees = view.roots
+    .map(r => ({ n: r, size: [r, ...descendants(r, view)].filter(reopen).length }))
+    .filter(t => t.size);
+  return { view, count, trees };
+}
+
+function openGroup(w) {
+  const into = currentIsEmpty() ? myWin : undefined;
+  send('restoreWs', { ws: w.id, into });
+  if (!into) toast(`「${w.name}」在新窗口里打开了`);
+  if (mode === 'saved') setMode('tree');
+}
+
+function groupCard(w, { compact = false, terms } = {}) {
+  const { view, count, trees } = groupSummary(w);
+  const el = document.createElement('div');
+  el.className = 'group' + (compact ? ' compact' : '');
+  el.title = '点击打开这一组';
+  el.onclick = () => openGroup(w);
+
+  const head = document.createElement('div');
+  head.className = 'group-head';
+  const dot = document.createElement('span');
+  dot.className = 'ws-dot';
+  dot.style.background = wsColor(w);
+  const name = document.createElement('span');
+  name.className = 'group-name';
+  highlight(name, w.name, terms);
+  const num = document.createElement('span');
+  num.className = 'group-count';
+  num.textContent = `${count} 个`;
+  head.append(dot, name, num);
+
+  const time = document.createElement('div');
+  time.className = 'group-time';
+  time.textContent = w.stashed ? `收起于 ${stamp(w.stashed)}` : '';
+
+  const list = document.createElement('div');
+  list.className = 'group-list';
+  const shown = trees.slice(0, compact ? 2 : 4);
+  for (const t of shown) {
+    const item = document.createElement('div');
+    item.className = 'group-item';
+    const title = document.createElement('span');
+    title.className = 'group-title';
+    highlight(title, displayTitle(t.n), terms);
+    item.append(favicon(t.n), title);
+    if (t.size > 1) {
+      const more = document.createElement('span');
+      more.className = 'group-sub';
+      more.textContent = `+${t.size - 1}`;
+      more.title = `这棵树下面还有 ${t.size - 1} 个`;
+      item.append(more);
+    }
+    list.append(item);
+  }
+  if (trees.length > shown.length) {
+    const rest = document.createElement('div');
+    rest.className = 'group-rest';
+    rest.textContent = `还有 ${trees.length - shown.length} 棵树…`;
+    list.append(rest);
+  }
+  el.append(head, time, list);
+
+  const acts = document.createElement('div');
+  acts.className = 'group-acts';
+  const btn = (label, cls, fn, title) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    if (cls) b.className = cls;
+    if (title) b.title = title;
+    b.onclick = e => { e.stopPropagation(); fn(b, e); };
+    acts.append(b);
+    return b;
+  };
+  btn(currentIsEmpty() ? '在这个窗口打开' : '打开', 'primary', () => openGroup(w));
+  if (!compact) {
+    btn('改名', '', async () => {
+      const v = await askText({ title: '给这一组改名', value: w.name, ok: '保存' });
+      if (v) send('renameWs', { ws: w.id, name: v });
+    });
+    btn('导出', '', (b, e) => showMenu(exportItems(w.name, view.roots, view), e.clientX, e.clientY));
+    btn('删除', 'danger', b => {
+      if (!b.classList.contains('armed')) { b.classList.add('armed'); b.textContent = '确认删除？'; return; }
+      send('deleteWs', { ws: w.id });
+    }, '删除这一组和里面所有的记录（不可恢复）');
+  }
+  el.append(acts);
+  return el;
+}
+
+function renderSaved(tree) {
+  const terms = query ? query.toLowerCase().split(/\s+/).filter(Boolean) : null;
+  const head = document.createElement('div');
+  head.className = 'saved-head';
+  const back = document.createElement('button');
+  back.className = 'icon';
+  back.innerHTML = ICONS.back;
+  back.title = '回到标签树（Esc）';
+  back.onclick = () => setMode('tree');
+  const h = document.createElement('div');
+  h.className = 'saved-title';
+  h.textContent = '已保存的工作区';
+  head.append(back, h);
+  tree.append(head);
+
+  let list = savedWorkspaces();
+  if (terms) {
+    const text = w => (w.name + ' ' + Object.values(state.nodes)
+      .filter(n => n.ws === w.id).map(n => displayTitle(n) + ' ' + n.url).join(' ')).toLowerCase();
+    list = list.filter(w => terms.every(t => text(w).includes(t)));
+  }
+  if (!list.length) {
+    empty(tree, terms ? '没有找到' : '还没有保存的工作区',
+      terms ? '可以搜工作区的名字，或者里面网页的标题。'
+        : '右键一棵树选「另存为一组」，或者点左上角的工作区名称选「收起当前工作区」，<br>就能把它存起来，以后在这里挑出来打开。<br><br>直接关掉窗口或浏览器，也会自动存到这里。');
+    return;
+  }
+  for (const w of list) tree.append(groupCard(w, { terms }));
+}
+
+function renderStartPrompt(tree) {
+  const list = savedWorkspaces();
+  const head = document.createElement('div');
+  head.className = 'start-head';
+  head.innerHTML = '<h3>接着用之前存的？</h3><p>点一组，就在这个窗口里打开。<br>也可以直接开始浏览，新的树会自动长出来。</p>';
+  tree.append(head);
+  for (const w of list.slice(0, 5)) tree.append(groupCard(w, { compact: true }));
+  if (list.length > 5) {
+    const more = document.createElement('button');
+    more.className = 'start-more';
+    more.textContent = `查看全部 ${list.length} 组`;
+    more.onclick = () => setMode('saved');
+    tree.append(more);
+  }
+}
+
+// 一个简单的输入框对话框；确定返回输入的文字，取消返回 null
+function askText({ title, value = '', placeholder = '', ok = '确定', hint = '' }) {
+  return new Promise(resolve => {
+    hideMenu();
+    hideCard();
+    const d = $('#dialog');
+    const box = document.createElement('div');
+    box.className = 'dialog-box';
+    const h = document.createElement('div');
+    h.className = 'dialog-title';
+    h.textContent = title;
+    const input = document.createElement('input');
+    input.className = 'dialog-input';
+    input.value = value;
+    input.placeholder = placeholder;
+    input.maxLength = 40;
+    box.append(h, input);
+    if (hint) {
+      const p = document.createElement('div');
+      p.className = 'dialog-hint';
+      p.textContent = hint;
+      box.append(p);
+    }
+    const acts = document.createElement('div');
+    acts.className = 'dialog-acts';
+    const cancel = document.createElement('button');
+    cancel.textContent = '取消';
+    const okBtn = document.createElement('button');
+    okBtn.className = 'primary';
+    okBtn.textContent = ok;
+    acts.append(cancel, okBtn);
+    box.append(acts);
+    d.replaceChildren(box);
+    d.hidden = false;
+    input.focus();
+    input.select();
+    const done = v => { d.hidden = true; d.replaceChildren(); resolve(v); };
+    cancel.onclick = () => done(null);
+    okBtn.onclick = () => done(input.value.trim());
+    d.onmousedown = e => { if (e.target === d) done(null); };
+    input.onkeydown = e => {
+      e.stopPropagation();
+      if (e.key === 'Enter') done(input.value.trim());
+      if (e.key === 'Escape') done(null);
+    };
+  });
+}
+
+async function saveGroup(n, view) {
+  const count = [n, ...descendants(n, view)].filter(x => x.st !== 'closed' && !isBlank(x.url)).length;
+  const name = await askText({
+    title: '另存为一组',
+    value: displayTitle(n).slice(0, 30),
+    placeholder: '给这一组起个名字',
+    ok: '保存',
+    hint: `这棵树${count ? `打开着的 ${count} 个标签会关掉，` : ''}存到「已保存」里，以后挑出来就能按原样打开。`,
+  });
+  if (name == null) return;
+  const r = await send('saveAsGroup', { id: n.id, name });
+  if (r?.ok) toast(`已保存为「${name || '新的一组'}」，在顶部的书签按钮里找`);
 }
 
 // ---------- 拖动调整树 ----------
@@ -988,6 +1243,7 @@ function nodeMenu(n, view, x, y) {
     : { icon: 'unread', label: '标为未看', run: () => send('markRead', { id: n.id, read: false }) });
   items.push('-');
   if (openCount) items.push({ icon: 'stash', label: '收起这个分支', sub: `${openCount} 个，可恢复`, run: () => send('stashBranch', { id: n.id }) });
+  items.push({ icon: 'saved', label: '另存为一组…', sub: '起名存到「已保存」', run: () => saveGroup(n, view) });
   if (sleepable.length) items.push({ icon: 'moon', label: sub.length > 1 ? '让这个分支休眠' : '让它休眠', sub: `${sleepable.length} 个，释放内存`, run: () => sleepTabs(sleepable) });
   if (openCount > 1) items.push({ icon: 'close', label: '关闭这个分支', sub: `${openCount} 个`, run: () => send('close', { id: n.id, branch: true }) });
   else if (live && !dups.length) items.push({ icon: 'close', label: '关闭', run: () => send('close', { id: n.id }) });
@@ -1039,7 +1295,8 @@ function wsMenu() {
   items.push('-');
   items.push({ icon: 'plus', label: '新建工作区', sub: '新窗口', run: () => send('newWs') });
   items.push({ icon: 'edit', label: '重命名当前工作区', run: startRename });
-  items.push({ icon: 'stash', label: '收起当前工作区', sub: '关闭窗口，记录保留', run: () => { const w = myWs(); if (w) send('stashWs', { ws: w.id }); } });
+  items.push({ icon: 'stash', label: '收起当前工作区', sub: '关闭窗口，存到「已保存」', run: () => { const w = myWs(); if (w) send('stashWs', { ws: w.id }); } });
+  items.push({ icon: 'saved', label: '查看全部已保存', sub: `${stashed.length} 组`, run: () => setMode('saved') });
   showMenu(items, r.left, r.bottom + 4);
 }
 
@@ -1201,6 +1458,7 @@ function toast(msg) {
 // ---------- 事件绑定 ----------
 
 $('#wsBtn').onclick = wsMenu;
+$('#savedBtn').onclick = () => setMode(mode === 'saved' ? 'tree' : 'saved');
 $('#moreBtn').onclick = moreMenu;
 $('#nextUnread').onclick = nextUnread;
 $('#locate').onclick = locate;
@@ -1231,11 +1489,13 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
     if (!$('#menu').hidden) hideMenu();
     else if (query) setQuery('');
+    else if (mode === 'saved') setMode('tree');
     else if (filter !== 'all') { filter = 'all'; sel = -1; render(); }
     else $('#q').blur();
     return;
   }
   if (!typing && e.key === '/') { e.preventDefault(); $('#q').focus(); return; }
+  if (mode === 'saved') return;   // 下面这些快捷键只对标签树有用
   if (!typing && (e.key === 'n' || e.key === 'N')) { nextUnread(); return; }
   if (!typing && e.key === 'F2' && rows[sel]) { e.preventDefault(); renameNode(rows[sel].n); return; }
   if (!typing && (e.key === 's' || e.key === 'S') && rows[sel]) {
