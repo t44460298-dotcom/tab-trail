@@ -1,0 +1,184 @@
+/* 标签脉络 · 并排页 */
+
+body {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ---------- 顶部 ---------- */
+
+.bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 36px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+}
+.brand { flex: none; color: var(--fg2); font-weight: 600; }
+.brand b { color: var(--muted); font-weight: 400; }
+.hint {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--muted);
+}
+.seg {
+  flex: none;
+  display: flex;
+  padding: 2px;
+  border-radius: 7px;
+  background: var(--hover);
+}
+.seg button {
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 5px;
+  color: var(--muted);
+}
+.seg button:hover { color: var(--fg); }
+.seg button.on { background: var(--surface); color: var(--fg); box-shadow: 0 1px 2px rgba(0, 0, 0, .12); }
+.btn {
+  flex: none;
+  height: 26px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--fg2);
+}
+.btn:hover { border-color: var(--accent); color: var(--accent); }
+.btn.primary { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
+.btn.primary:hover { color: var(--on-accent); filter: brightness(1.08); }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* ---------- 请求权限 ---------- */
+
+.perm {
+  flex: none;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--amber-soft);
+}
+.perm-text { flex: 1 1 320px; min-width: 0; }
+.perm-text b { word-break: break-word; }
+.perm-text p { margin: 2px 0 0; font-size: 12px; color: var(--fg2); }
+
+/* ---------- 格子 ---------- */
+
+.stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  gap: 6px;
+  padding: 6px;
+}
+.pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  overflow: hidden;
+  background: var(--surface);
+}
+.pane-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 4px 0 8px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+  user-select: none;
+}
+.pane-head .fav { margin: 0; }
+.pane-head .t {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg2);
+}
+.ic {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 5px;
+  color: var(--muted);
+}
+.ic svg { width: 13px; height: 13px; }
+.ic:hover { background: var(--hover); color: var(--fg); }
+.ic.danger:hover { color: var(--danger); }
+.chip-allow {
+  flex: none;
+  max-width: 45%;
+  height: 20px;
+  padding: 0 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 10px;
+  background: var(--amber-soft);
+  color: var(--amber);
+  font-size: 12px;
+  font-weight: 600;
+}
+.chip-allow:hover { filter: brightness(.95); }
+.pane-body { position: relative; flex: 1; min-height: 0; background: #fff; }
+.pane-body iframe { display: block; width: 100%; height: 100%; border: 0; }
+.wait {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 12px;
+  text-align: center;
+  background: var(--surface);
+  color: var(--muted);
+}
+
+/* 放大一格：其余的只是藏起来，不重新加载 */
+.stage.has-max .pane { visibility: hidden; }
+.stage.has-max .gutter { display: none; }
+.stage .pane.max {
+  visibility: visible;
+  position: absolute;
+  inset: 6px;
+  z-index: 3;
+}
+
+/* 缝隙：盖在格子之间的空隙上，可以拖动 */
+.gutter {
+  position: absolute;
+  z-index: 2;
+  border-radius: 3px;
+  touch-action: none;
+}
+.gutter.v { width: 10px; cursor: col-resize; }
+.gutter.h { height: 10px; cursor: row-resize; }
+.gutter:hover, .gutter.on { background: var(--accent-soft); }
+/* 拖动时鼠标会经过网页，不让网页把鼠标事件抢走 */
+body.dragging iframe { pointer-events: none; }
+body.dragging { user-select: none; }
+
+@media (max-width: 720px) {
+  .hint { display: none; }
+  .bar { justify-content: space-between; }
+}

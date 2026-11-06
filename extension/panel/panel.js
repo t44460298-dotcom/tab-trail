@@ -40,7 +40,10 @@ const ICONS = {
   bar: svg('<path d="M2.5 5h11M2.5 8.5h7M2.5 12h4"/>', 'stroke-width="2"'),
   saved: svg('<path d="M4.5 2.5h7a1 1 0 0 1 1 1v10L8 10.8l-4.5 2.7v-10a1 1 0 0 1 1-1Z"/>', 'stroke-width="1.5"'),
   back: svg('<path d="M10 3.5 5.5 8l4.5 4.5"/>', 'stroke-width="1.8"'),
+  split: svg('<rect x="2" y="3" width="12" height="10" rx="1.6"/><path d="M8 3v10"/>', 'stroke-width="1.5"'),
+  check: svg('<path d="M3.5 8.5 6.8 12l5.7-7.5"/>', 'stroke-width="2"'),
 };
+const MAX_PANES = 6;
 const TREE_ART = '<svg viewBox="0 0 56 56" fill="none"><rect x="1" y="1" width="54" height="54" rx="14" fill="var(--accent-soft)"/><path d="M19 17v22M19 28h14M19 39h14" stroke="var(--accent)" stroke-width="3" stroke-linecap="round"/><circle cx="19" cy="16" r="4.5" fill="var(--accent)"/><circle cx="37" cy="28" r="4.5" fill="var(--accent)"/><circle cx="37" cy="39" r="4.5" fill="none" stroke="var(--accent)" stroke-width="2.5"/></svg>';
 
 const FILTERS = {
@@ -48,7 +51,7 @@ const FILTERS = {
   unread: { label: '未看', test: (n, v) => isLive(n) && isUnread(n, v), empty: ['都看完了', '这个工作区里没有未看的标签。'] },
   star: { label: '星标', test: n => !!n.star, empty: ['还没有星标', '鼠标移到一行上点 ☆，或者选中后按 <kbd>S</kbd>，重要的标签就不会找不到。'] },
   dup: { label: '重复', test: n => dupsOf(n).length > 0, empty: ['没有重复的标签', '同一个网页开了不止一个时，会出现在这里。'] },
-  stashed: { label: '收起', tip: '已收起', test: n => n.st === 'stashed' || (n.st === 'open' && n.tab == null), empty: ['没有收起的标签', '在一个分支上右键选「收起这个分支」，就能先把它放到一边，以后一键恢复。'] },
+  stashed: { label: '收起', tip: '已收起', test: n => !n.inPage && (n.st === 'stashed' || (n.st === 'open' && n.tab == null)), empty: ['没有收起的标签', '在一个分支上右键选「收起这个分支」，就能先把它放到一边，以后一键恢复。'] },
   closed: { label: '关闭', tip: '已关闭', test: n => n.st === 'closed', empty: ['没有已关闭的记录', '关掉的标签会留在这里 30 天，方便回头找。加了星标或备注的会一直保留。'] },
 };
 const SLEEP_OPTIONS = [[0, '不自动休眠'], [30, '30 分钟'], [60, '1 小时'], [120, '2 小时'], [360, '6 小时']];
@@ -65,6 +68,7 @@ let IDX = null;         // 全部工作区的索引，见 common.js 的 buildInd
 let mode = 'tree';      // 'tree' 标签树 | 'saved' 已保存的工作区
 let editing = null;     // 正在写备注的节点；写的时候先不重画，免得输入框被冲掉
 let dragging = null;    // 正在拖动的节点；拖的时候同样先不重画
+let picking = null;     // 正在挑要并排的标签时，已选中的节点 id（Set，按选中的先后）；null = 没在挑
 let pendingRender = false;
 let showClosed = pref('showClosed', true);
 let compact = pref('compact', false);
@@ -158,7 +162,7 @@ function isUnread(n, view) {
 
 // 同一个网页还开在别处的标签
 function dupsOf(n) {
-  if (!IDX || !isLive(n) || isBlank(n.url)) return [];
+  if (!IDX || !isLive(n) || n.copy || isBlank(n.url)) return [];
   return (IDX.live.get(TK.urlKey(n.url)) || []).filter(x => x !== n);
 }
 
@@ -201,8 +205,10 @@ function wsLabel(id, here) {
   return id === here ? '本工作区' : state.ws[id]?.name || '别的工作区';
 }
 
-// 可以手动让它休眠的：打开着、没在睡、不是当前窗口正在看的
-const canSleep = (n, view) => isLive(n) && !n.sleep && n !== view.active;
+// 可以手动让它休眠的：打开着、没在睡、不是当前窗口正在看的、不在分屏里（分屏里没选中的也看得见）
+const canSleep = (n, view) => isLive(n) && !n.sleep && n !== view.active && n.split == null;
+// 能放进并排页的：网页，而且还没合到别的并排页里
+const canPick = n => /^https?:/i.test(n.url) && !n.inPage;
 
 // ---------- 渲染 ----------
 
@@ -243,6 +249,7 @@ function render() {
   if (query || filter !== 'all') renderFiltered(tree, view);
   else renderTree(tree, view);
   renderCrumbs(view);
+  renderPickBar();
 
   tree.scrollTop = scroll;
   if (sel >= rows.length) sel = rows.length - 1;
@@ -419,6 +426,7 @@ function row(n, depth, view, opt = {}) {
   if (unread && live) el.classList.add('unread');
   if (live && n.sleep) el.classList.add('sleeping');
   if (opt.dim) el.classList.add('dim');
+  if (picking) el.classList.add(picking.has(n.id) ? 'picked' : canPick(n) ? 'pickable' : 'unpickable');
   el.style.setProperty('--depth', depth);
   el.dataset.id = n.id;
 
@@ -459,6 +467,12 @@ function row(n, depth, view, opt = {}) {
 
   const fav = favicon(n);
   if (unread && live && seenBefore(n)) fav.querySelector('.dot').classList.add('ring');
+  if (isSplitPage(n.url)) {
+    const mark = document.createElement('span');
+    mark.className = 'split-fav';
+    mark.innerHTML = ICONS.split;
+    fav.firstChild.replaceWith(mark);
+  }
   el.append(tw, fav, main, aside(n, view, { active, unread, live, kids: opt.kids }), actions(n, view, live));
   if (opt.lines) drawLines(el, opt.lines);
   // 阅读时长细条：读得越久越长（开平方，免得一篇特别长的把其他的都压没了）
@@ -471,7 +485,11 @@ function row(n, depth, view, opt = {}) {
   }
   if (opt.drag) makeDraggable(el, n, view, opt.kidsShown);
 
-  el.onclick = () => openRow(n);
+  // 挑选并排的标签时，点一下是选中或取消。没在挑时按住 Ctrl 点一下，直接开始挑
+  el.onclick = e => {
+    if (picking || e.ctrlKey || e.metaKey) togglePick(n);
+    else openRow(n);
+  };
   el.onauxclick = e => { if (e.button === 1 && live) { e.preventDefault(); send('close', { id: n.id }); } };
   el.oncontextmenu = e => { e.preventDefault(); hideCard(); nodeMenu(n, view, e.clientX, e.clientY); };
   el.onmouseenter = () => scheduleCard(n, el);
@@ -513,7 +531,13 @@ function aside(n, view, o) {
     a.append(s);
     return s;
   };
+  if (picking?.has(n.id)) {
+    const s = span('pick-mark', '');
+    s.innerHTML = ICONS.check;
+    return a;
+  }
   if (n.star) span('star', '★', '星标');
+  if (n.split != null) span('tag-split', '并排', '和旁边的标签在同一个分屏里，右键可以取消并排');
   const dups = dupsOf(n);
   if (dups.length) {
     const s = span('dup', '重复', `这个网页还开着 ${dups.length} 个，点击跳到另一个`);
@@ -537,6 +561,8 @@ function aside(n, view, o) {
     const unread = hidden.filter(x => isLive(x) && isUnread(x, view)).length;
     span('count' + (unread ? ' hot' : ''), unread ? `${unread} 未看` : `+${hidden.length}`,
       `折叠了 ${hidden.length} 个` + (unread ? `，其中 ${unread} 篇没看` : ''));
+  } else if (n.inPage) {
+    span('tag-split', '并排', '已合到并排页里，点击跳过去');
   } else if (n.st === 'stashed' || (n.st === 'open' && n.tab == null)) {
     span('tag', '收起');
   } else if (n.seen) {
@@ -600,6 +626,8 @@ function paintSavedButton() {
 
 function setMode(m) {
   mode = m;
+  picking = null;
+  renderPickBar();
   query = '';
   $('#q').value = '';
   $('#qClear').hidden = true;
@@ -612,7 +640,7 @@ function setMode(m) {
 // 一组里有什么：会重新打开的标签数，和最上层的几棵树
 function groupSummary(w) {
   const view = buildView(w);
-  const reopen = n => (n.st === 'stashed' || (n.st === 'open' && n.tab == null)) && !isBlank(n.url);
+  const reopen = n => (n.st === 'stashed' || (n.st === 'open' && n.tab == null)) && !isBlank(n.url) && !n.inPage;
   const count = view.mine.filter(reopen).length;
   const trees = view.roots
     .map(r => ({ n: r, size: [r, ...descendants(r, view)].filter(reopen).length }))
@@ -909,7 +937,7 @@ $('#tree').addEventListener('drop', e => {
 // 一组节点连同它们的整个分支（包括已关闭、已收起的），新标签页跳过但保留它下面的
 function exportTree(roots, view) {
   const walk = (n, depth, out) => {
-    const skip = isBlank(n.url);
+    const skip = isBlank(n.url) || isSplitPage(n.url);   // 并排页里的网页各有各的记录，页面本身不用导出
     if (!skip) out.push({ n, depth });
     for (const c of view.kids.get(n.id) || []) walk(c, skip ? depth : depth + 1, out);
     return out;
@@ -1075,7 +1103,7 @@ function showCard(n, el) {
     d.textContent = text;
     return d;
   };
-  const parts = [div('t', (n.star ? '★ ' : '') + (n.alias || (n.title && !isBlank(n.url) ? n.title : displayTitle(n)))), div('u', n.url)];
+  const parts = [div('t', (n.star ? '★ ' : '') + (n.alias || (n.title && !isBlank(n.url) ? n.title : displayTitle(n)))), div('u', isSplitPage(n.url) ? '同一页显示的几个网页' : n.url)];
   if (n.note) parts.push(div('n', n.note));
   const dl = document.createElement('dl');
   const line = (k, v, cls) => {
@@ -1150,6 +1178,50 @@ function openRow(n) {
   if (query) setQuery('');
 }
 
+// ---------- 挑选要并排的标签 ----------
+
+function togglePick(n) {
+  if (!canPick(n)) { toast(n.inPage ? '它已经在并排页里了' : '只有网页才能并排，浏览器自带的页面不行'); return; }
+  picking ??= new Set();
+  if (picking.has(n.id)) picking.delete(n.id);
+  else if (picking.size >= MAX_PANES) { toast(`一页最多放 ${MAX_PANES} 个`); return; }
+  else picking.add(n.id);
+  render();
+}
+
+function stopPick() {
+  picking = null;
+  render();
+}
+
+function renderPickBar() {
+  const bar = $('#pickBar');
+  bar.hidden = !picking;
+  document.body.classList.toggle('picking', !!picking);
+  if (!picking) return;
+  // 选中后节点可能已经没了（比如标签被关掉、记录被删掉）
+  for (const id of picking) if (!state.nodes[id]) picking.delete(id);
+  const c = picking.size;
+  const hint = c < 2 ? '点树上的标签来选，最少 2 个，最多 6 个'
+    : c === 2 && api.tabs?.createSplit ? '用浏览器分屏，页面不会重新加载'
+    : '会合到一页里，页面要重新加载';
+  $('#pickText').textContent = `已选 ${c} 个`;
+  $('#pickHint').textContent = hint;
+  $('#pickGo').disabled = c < 2;
+}
+
+async function applyPick() {
+  const ids = [...picking];
+  picking = null;
+  render();
+  splitTabs(ids);
+}
+
+async function splitTabs(ids) {
+  const r = await send('split', { ids });
+  if (r?.ok && r.r === 'native') toast('已并排。右键其中一个可以取消');
+}
+
 function setQuery(q) {
   query = q;
   $('#q').value = q;
@@ -1220,7 +1292,7 @@ function extraDups(view) {
   const extra = [];
   const groups = new Map();
   for (const n of view.mine.filter(isLive)) {
-    if (isBlank(n.url)) continue;
+    if (isBlank(n.url) || n.copy) continue;
     const key = TK.urlKey(n.url);
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(n);
@@ -1257,13 +1329,19 @@ function nodeMenu(n, view, x, y) {
   const live = isLive(n);
   const sub = [n, ...descendants(n, view)];
   const openCount = sub.filter(isLive).length;
-  const stashCount = sub.filter(s => s.st === 'stashed' || (s.st === 'open' && s.tab == null)).length;
+  const stashCount = sub.filter(s => !s.inPage && (s.st === 'stashed' || (s.st === 'open' && s.tab == null))).length;
   const sleepable = sub.filter(s => canSleep(s, view));
   const unread = isUnread(n, view);
   const dups = dupsOf(n);
   const items = [
-    { icon: live ? 'goto' : 'reopen', label: live ? '切换到这个标签' : '重新打开', run: () => openRow(n) },
+    n.inPage
+      ? { icon: 'split', label: '跳到并排页', run: () => openRow(n) }
+      : { icon: live ? 'goto' : 'reopen', label: live ? '切换到这个标签' : '重新打开', run: () => openRow(n) },
   ];
+  if (live) items.push({ icon: 'copy', label: '复制标签', sub: 'D', run: () => send('duplicate', { id: n.id }) });
+  if (n.split != null) items.push({ icon: 'split', label: '取消并排', run: () => send('unsplit', { id: n.id }) });
+  else if (live && view.active && view.active !== n) items.push({ icon: 'split', label: '和当前标签并排', run: () => splitTabs([view.active.id, n.id]) });
+  if (canPick(n) && !picking) items.push({ icon: 'split', label: '选几个一起并排…', sub: `最多 ${MAX_PANES} 个`, run: () => togglePick(n) });
   if (dups.length) {
     items.push({ icon: 'dup', label: '跳到另一个相同的标签', sub: wsLabel(dups[0].ws, n.ws), run: () => send('focus', { id: dups[0].id }) });
     items.push({ icon: 'close', label: '关闭这个重复的', run: () => send('close', { id: n.id }) });
@@ -1501,6 +1579,8 @@ $('#savedBtn').onclick = () => setMode(mode === 'saved' ? 'tree' : 'saved');
 $('#moreBtn').onclick = moreMenu;
 $('#nextUnread').onclick = nextUnread;
 $('#locate').onclick = locate;
+$('#pickGo').onclick = applyPick;
+$('#pickCancel').onclick = stopPick;
 $('#q').oninput = e => {
   query = e.target.value.trim();
   $('#qClear').hidden = !e.target.value;
@@ -1527,6 +1607,7 @@ document.addEventListener('keydown', e => {
   const typing = e.target.matches('input');
   if (e.key === 'Escape') {
     if (!$('#menu').hidden) hideMenu();
+    else if (picking) stopPick();
     else if (query) setQuery('');
     else if (mode === 'saved') setMode('tree');
     else if (filter !== 'all') { filter = 'all'; sel = -1; render(); }
@@ -1537,6 +1618,7 @@ document.addEventListener('keydown', e => {
   if (mode === 'saved') return;   // 下面这些快捷键只对标签树有用
   if (!typing && (e.key === 'n' || e.key === 'N')) { nextUnread(); return; }
   if (!typing && e.key === 'F2' && rows[sel]) { e.preventDefault(); renameNode(rows[sel].n); return; }
+  if (!typing && (e.key === 'd' || e.key === 'D') && !e.ctrlKey && !e.metaKey && isLive(rows[sel]?.n || {})) { send('duplicate', { id: rows[sel].n.id }); return; }
   if (!typing && (e.key === 's' || e.key === 'S') && rows[sel]) {
     const n = rows[sel].n;
     send('star', { id: n.id, star: !n.star });

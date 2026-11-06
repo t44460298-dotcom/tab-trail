@@ -15,7 +15,9 @@ export function createClock(t = Date.UTC(2026, 10, 3, 8)) {
 
 // firefoxStyle: 新标签在 onCreated 时网址是 about:blank，真实网址稍后通过 onUpdated 才到
 // openerLate: onCreated 里没有 openerTabId，之后的 onUpdated 才带上（Edge / Chrome 实测会这样）
-export function createBrowser({ local = {}, firefoxStyle = false, eventsAfterCreate = false, openerLate = false } = {}) {
+// openerLate: 'silent'：连 onUpdated 也还没来（页面在排队等连接）
+// noSplit: 浏览器没有原生分屏接口；splitFails: 有接口，但这次分屏失败
+export function createBrowser({ local = {}, firefoxStyle = false, eventsAfterCreate = false, openerLate = false, rejectData = false, noSplit = false, splitFails = false } = {}) {
   const store = { local: clone(local), session: {} };
   const tabs = new Map();
   const wins = new Map();
@@ -32,9 +34,11 @@ export function createBrowser({ local = {}, firefoxStyle = false, eventsAfterCre
     commands: { onCommand: event() },
   };
   const alarms = new Map();
+  const sessionRules = new Map();
+  let nextSplit = 500;
 
   // 「点开才加载」的占位页会把标题设成它带着的原标题
-  const title = url => (url.includes('/lazy/lazy.html?') ? new URL(url).searchParams.get('t')
+  const title = url => (url.startsWith('data:') ? decodeURIComponent(url).match(/<title>(.*?)<\/title>/)?.[1] || ''
     : url.startsWith('http') ? '标题 ' + url.split('/').pop() : '新标签页');
   const reindex = w => w.tabs.forEach((id, i) => { tabs.get(id).index = i; });
   const later = fn => (eventsAfterCreate ? setImmediate(fn) : fn());
@@ -52,7 +56,7 @@ export function createBrowser({ local = {}, firefoxStyle = false, eventsAfterCre
     later(() => {
       ev.tabs.onCreated.fire(created);
       if (firefoxStyle) ev.tabs.onUpdated.fire(t.id, { url: t.url }, clone(t));
-      else if (openerLate) ev.tabs.onUpdated.fire(t.id, { status: 'loading' }, clone(t));
+      else if (openerLate && openerLate !== 'silent') ev.tabs.onUpdated.fire(t.id, { status: 'loading' }, clone(t));
       if (active) activate(t.id);
     });
     if (eventsAfterCreate && active) { w.tabs.forEach(id => { tabs.get(id).active = id === t.id; }); }
@@ -74,7 +78,8 @@ export function createBrowser({ local = {}, firefoxStyle = false, eventsAfterCre
     ev.tabs.onActivated.fire({ tabId: id, windowId: t.windowId });
     if (t.discarded) {   // 休眠的标签被点开，会重新加载
       t.discarded = false;
-      ev.tabs.onUpdated.fire(id, { discarded: false }, clone(t));
+      t.status = 'loading';
+      ev.tabs.onUpdated.fire(id, { discarded: false, status: 'loading' }, clone(t));
     }
   }
 
@@ -137,9 +142,46 @@ export function createBrowser({ local = {}, firefoxStyle = false, eventsAfterCre
     tabs: {
       ...ev.tabs,
       async create({ windowId, url = 'chrome://newtab/', active = true, index }) {
+        if (rejectData && url.startsWith('data:')) throw new Error('不允许打开 data: 网址');
         return clone(addTab(windowId ?? focused, url, { active, index }));
       },
-      async update(id, { active }) { if (active) activate(id); return clone(tabs.get(id)); },
+      async update(id, { active, url, pinned }) {
+        if (active) activate(id);
+        if (pinned != null) tabs.get(id).pinned = pinned;
+        if (url) { tabs.get(id).status = 'loading'; tabs.get(id).discarded = false; navigate(id, url); }
+        return clone(tabs.get(id));
+      },
+      // 和浏览器一样：新标签排在原标签后面并选中，来源就是原标签
+      async duplicate(id) {
+        const t = tabs.get(id);
+        const copy = addTab(t.windowId, t.url, { active: true, opener: id, index: t.index + 1 });
+        return clone(copy);
+      },
+      ...(noSplit ? {} : {
+        async createSplit(ids) {
+          if (splitFails) throw new Error('不能分屏');
+          const [a, b] = ids.map(id => tabs.get(id));
+          if (!a || !b || ids.length !== 2) throw new Error('必须是两个标签');
+          if (a.windowId !== b.windowId || Math.abs(a.index - b.index) !== 1) throw new Error('必须相邻');
+          if (!!a.pinned !== !!b.pinned || (a.groupId ?? -1) !== (b.groupId ?? -1)) throw new Error('固定状态和分组必须一样');
+          if ((a.splitViewId ?? -1) !== -1 || (b.splitViewId ?? -1) !== -1) throw new Error('已经在分屏里');
+          const sid = nextSplit++;
+          for (const t of [a, b]) {
+            t.splitViewId = sid;
+            ev.tabs.onUpdated.fire(t.id, { splitViewId: sid }, clone(t));
+          }
+          return sid;
+        },
+        async unsplit(sid) {
+          for (const t of tabs.values()) {
+            if (t.splitViewId !== sid) continue;
+            t.splitViewId = -1;
+            ev.tabs.onUpdated.fire(t.id, { splitViewId: -1 }, clone(t));
+          }
+        },
+      }),
+      async group({ groupId, tabIds }) { for (const id of [].concat(tabIds)) tabs.get(id).groupId = groupId; return groupId; },
+      async ungroup(ids) { for (const id of [].concat(ids)) tabs.get(id).groupId = -1; },
       async remove(ids) { for (const id of [].concat(ids)) closeTab(id); },
       async get(id) { if (!tabs.has(id)) throw new Error('No tab with id ' + id); return clone(tabs.get(id)); },
       async query(q = {}) { return [...tabs.values()].filter(t => matches(t, q)).map(clone); },
@@ -150,7 +192,8 @@ export function createBrowser({ local = {}, firefoxStyle = false, eventsAfterCre
         const t = tabs.get(id);
         if (!t || t.active) throw new Error('不能让这个标签休眠');
         t.discarded = true;
-        ev.tabs.onUpdated.fire(id, { discarded: true }, clone(t));
+        t.status = 'unloaded';
+        ev.tabs.onUpdated.fire(id, { discarded: true, status: 'unloaded' }, clone(t));
         return clone(t);
       },
     },
@@ -189,12 +232,27 @@ export function createBrowser({ local = {}, firefoxStyle = false, eventsAfterCre
       create(name, info) { alarms.set(name, { name, ...info }); },
     },
     commands: ev.commands,
+    declarativeNetRequest: {
+      async getSessionRules() { return [...sessionRules.values()].map(clone); },
+      async updateSessionRules({ removeRuleIds = [], addRules = [] }) {
+        for (const id of removeRuleIds) sessionRules.delete(id);
+        for (const r of addRules) sessionRules.set(r.id, clone(r));
+      },
+    },
   };
 
   const send = msg => new Promise(res => ev.runtime.onMessage.fire(msg, {}, res));
+  // 从某个标签里的页面发消息（并排页就是这样）
+  const sendFrom = (tabId, msg) => new Promise(res => ev.runtime.onMessage.fire(msg, { tab: clone(tabs.get(tabId)) }, res));
+  // 模拟页面加载完成
+  const complete = id => {
+    const t = tabs.get(id);
+    t.status = 'complete';
+    ev.tabs.onUpdated.fire(id, { status: 'complete' }, clone(t));
+  };
   const fireAlarm = name => ev.alarms.onAlarm.fire({ name });
 
-  return { api, store, tabs, wins, alarms, openWindow, addTab, activate, navigate, closeTab, closeWindow, send, fireAlarm, get focused() { return focused; } };
+  return { api, store, tabs, wins, alarms, sessionRules, openWindow, addTab, activate, navigate, closeTab, closeWindow, send, sendFrom, fireAlarm, complete, get focused() { return focused; } };
 }
 
 // 在独立的上下文里加载 background.js；时间和定时器由测试控制

@@ -412,6 +412,39 @@ header {
   font-weight: 600;
 }
 .aside .tag { color: var(--amber); }
+.aside .tag-split { color: var(--accent); }
+.aside .pick-mark { color: var(--accent); }
+.aside .pick-mark svg { width: 14px; height: 14px; }
+.split-fav { display: block; width: 16px; height: 16px; color: var(--accent); }
+
+/* 挑选要并排的标签 */
+.row.picked { --rowbg: var(--sel); box-shadow: inset 0 0 0 1.5px var(--accent); }
+.row.unpickable { opacity: .45; }
+.picking .acts { display: none !important; }
+.pickbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
+.pick-info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.pick-info b { color: var(--fg); }
+.pick-info span { font-size: calc(var(--fs) - 2px); color: var(--muted); }
+.pick-btn {
+  flex: none;
+  height: 28px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--fg2);
+}
+.pick-btn:hover { border-color: var(--accent); color: var(--accent); }
+.pick-btn.go { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
+.pick-btn.go:hover { color: var(--on-accent); filter: brightness(1.08); }
+.pick-btn.go:disabled { opacity: .45; cursor: default; filter: none; }
 .aside .dup {
   padding: 0 5px;
   border-radius: 4px;

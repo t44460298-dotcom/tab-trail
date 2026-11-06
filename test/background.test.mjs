@@ -16,9 +16,9 @@ function view(b) {
 }
 
 const url = name => 'https://papers.test/' + name;
-const LAZY = 'chrome-extension://test/lazy/lazy.html?';
-// 占位页地址 → 它代表的真实网址
-const realUrl = u => (u.startsWith(LAZY) ? new URL(u).searchParams.get('u') : u);
+// 占位页：data: 网页，真实网址放在 #tab-trail= 后面
+const isLazyUrl = u => u.startsWith('data:text/html') && u.includes('#tab-trail=');
+const realUrl = u => (isLazyUrl(u) ? decodeURIComponent(u.slice(u.indexOf('#tab-trail=') + 11)) : u);
 
 // 读文献：A 里打开 B C D，看 B；B 里打开 E F G，看 F
 async function readingSession(opts = {}) {
@@ -39,6 +39,32 @@ async function readingSession(opts = {}) {
   b.activate(tF); await bg.settle();
   clock.advance(3 * SEC);
   return { clock, b, bg, win, t: { A: tA, B: tB, C: tC, D: tD, E: tE, F: tF, G: tG } };
+}
+
+// 把读文献的那棵树（再加一个别的网站的页面）存成一组，再打开：除了最近看的那个，都是占位标签
+async function lazyGroup() {
+  const s = await readingSession();
+  const { b, bg, t, win } = s;
+  b.addTab(win.id, 'https://other.test/x', { opener: t.A });
+  await bg.settle();
+  const group = (await b.send({ type: 'saveAsGroup', id: view(b).byTitle('A').id, name: '组' })).r;
+  await bg.settle();
+  await b.send({ type: 'restoreWs', ws: group }); await bg.settle();
+  const tabs = b.wins.get(view(b).s.ws[group].win).tabs.map(id => b.tabs.get(id));
+  const lazy = tabs.filter(x => isLazyUrl(x.url) && x.url.includes('papers.test')).map(x => ({ id: x.id, url: x.url }));
+  return { ...s, group, lazy };
+}
+
+const pageOf = b => view(b).nodes.find(n => n.url.includes('split/split.html'));
+
+// 把 C、E、G 三个标签合到一页
+async function threeInPage(opts) {
+  const s = await readingSession(opts);
+  const ids = ['C', 'E', 'G'].map(x => view(s.b).byTitle(x).id);
+  const r = await s.b.send({ type: 'split', ids });
+  assert.equal(r.r, 'page', r.error);
+  await s.bg.settle();
+  return s;
 }
 
 const tests = {
@@ -67,6 +93,15 @@ const tests = {
     assert.equal(v.parentOf('B'), 'A');
     assert.equal(v.parentOf('D'), 'A');
     assert.equal(v.parentOf('F'), 'B');
+    assert.equal(v.nodes.length, 7);
+  },
+
+  async '页面还在排队、一个更新事件都没有时，也能马上挂到树上'() {
+    const { b } = await readingSession({ openerLate: 'silent' });
+    const v = view(b);
+    assert.equal(v.parentOf('B'), 'A');
+    assert.equal(v.parentOf('D'), 'A');
+    assert.equal(v.parentOf('G'), 'B');
     assert.equal(v.nodes.length, 7);
   },
 
@@ -428,7 +463,7 @@ const tests = {
     const v = view(b);
     const win = v.s.ws[g].win;
     const tabs = b.wins.get(win).tabs.map(id => b.tabs.get(id));
-    const loaded = tabs.filter(x => !x.url.startsWith(LAZY));
+    const loaded = tabs.filter(x => !isLazyUrl(x.url));
     assert.equal(loaded.length, 1, '只有一个真正加载');
     assert.ok(loaded[0].active, '加载的那个就是切过去的那个');
     for (const x of ['B', 'E', 'F', 'G']) {
@@ -440,7 +475,7 @@ const tests = {
     assert.ok(['E', 'F'].includes(focus.title.slice(3)), '切过去的是最近看过的那篇');
     assert.equal(v.nodes.filter(n => n.ws === g && n.sleep).length, 3, '没加载的算作休眠');
     // 点开一个没加载的：占位页换成真网页，记录不变，也不算一次跳转
-    const lazyTab = tabs.find(x => x.url.startsWith(LAZY));
+    const lazyTab = tabs.find(x => isLazyUrl(x.url));
     b.activate(lazyTab.id);
     b.navigate(lazyTab.id, realUrl(lazyTab.url)); await bg.settle();
     const n = view(b).nodes.find(x => x.tab === lazyTab.id);
@@ -479,6 +514,89 @@ const tests = {
       assert.equal(v.byTitle(x).st, 'open');
     }
     assert.equal(v.parentOf('F'), 'B');
+  },
+
+  async '浏览器不让打开占位页时，退回直接打开，标签不会丢'() {
+    const { b, bg } = await readingSession({ rejectData: true });
+    const g = (await b.send({ type: 'saveAsGroup', id: view(b).byTitle('B').id, name: '组' })).r;
+    await bg.settle();
+    await b.send({ type: 'restoreWs', ws: g }); await bg.settle();
+    const v = view(b);
+    for (const x of ['B', 'E', 'F', 'G']) assert.equal(v.byTitle(x).st, 'open', x + ' 打开了');
+    assert.deepEqual(b.wins.get(v.s.ws[g].win).tabs.map(id => b.tabs.get(id).url).sort(), ['B', 'E', 'F', 'G'].map(url));
+  },
+
+  async '快速点过占位标签不加载，只加载停下来的那个'() {
+    const { b, bg, clock, lazy } = await lazyGroup();
+    clock.advance(5 * SEC);
+    b.activate(lazy[0].id);
+    b.activate(lazy[1].id);
+    b.activate(lazy[2].id);
+    await bg.settle();
+    assert.ok(isLazyUrl(b.tabs.get(lazy[0].id).url), '路过的不加载');
+    assert.ok(isLazyUrl(b.tabs.get(lazy[1].id).url), '路过的不加载');
+    assert.equal(b.tabs.get(lazy[2].id).url, realUrl(lazy[2].url), '停下来的那个加载');
+    assert.equal(view(b).nodes.find(n => n.tab === lazy[2].id).hist, undefined, '不算跳转记录');
+  },
+
+  async '同一网站排队：前面的加载完才开始，最多等 15 秒；不同网站不用等'() {
+    const { b, bg, clock, lazy, group } = await lazyGroup();
+    const win = view(b).s.ws[group].win;
+    const other = await b.api.tabs.create({ windowId: win, url: url('Z'), active: false });
+    b.tabs.get(other.id).status = 'loading';   // 同一网站有个页面还在加载
+    await bg.settle();
+    clock.advance(5 * SEC);
+    b.activate(lazy[0].id); await bg.settle();
+    assert.ok(isLazyUrl(b.tabs.get(lazy[0].id).url), '前面的还没加载完，先等着');
+    clock.advance(2 * SEC); await bg.settle();
+    assert.ok(isLazyUrl(b.tabs.get(lazy[0].id).url), '还在等');
+    b.complete(other.id);
+    clock.advance(SEC); await bg.settle();
+    assert.equal(b.tabs.get(lazy[0].id).url, realUrl(lazy[0].url), '前面的加载完了，轮到它');
+    b.complete(lazy[0].id);
+
+    // 前面的一直加载不完：最多等 15 秒
+    b.tabs.get(other.id).status = 'loading';
+    clock.advance(5 * SEC);
+    b.activate(lazy[1].id); await bg.settle();
+    assert.ok(isLazyUrl(b.tabs.get(lazy[1].id).url));
+    clock.advance(16 * SEC); await bg.settle();
+    assert.equal(b.tabs.get(lazy[1].id).url, realUrl(lazy[1].url), '等太久就不等了');
+    b.complete(lazy[1].id);
+
+    // 别的网站不受影响
+    const elsewhere = [...b.tabs.values()].find(x => isLazyUrl(x.url) && realUrl(x.url).startsWith('https://other.test/'));
+    clock.advance(5 * SEC);
+    b.activate(elsewhere.id); await bg.settle();
+    assert.equal(b.tabs.get(elsewhere.id).url, 'https://other.test/x', '另一个网站不用排队');
+  },
+
+  async '点醒的休眠标签还没加载完就切走，就接着睡；加载完的不动'() {
+    const { b, bg, t } = await readingSession();
+    const ids = ['E', 'G', 'D'].map(x => view(b).byTitle(x).id);
+    await b.send({ type: 'sleep', ids }); await bg.settle();
+    b.activate(t.E); await bg.settle();
+    assert.equal(b.tabs.get(t.E).discarded, false, '点开就醒');
+    b.activate(t.G); await bg.settle();
+    assert.equal(b.tabs.get(t.E).discarded, true, '还没加载完就切走：接着睡');
+    assert.equal(view(b).byTitle('E').sleep, true);
+    b.complete(t.G); await bg.settle();
+    b.activate(t.D); await bg.settle();
+    assert.notEqual(b.tabs.get(t.G).discarded, true, '已经加载完的不动');
+  },
+
+  async '浏览器恢复会话时选中的正好是占位标签：自动加载，也不会变成别的节点'() {
+    const { b, bg, clock, lazy } = await lazyGroup();
+    const target = view(b).nodes.find(n => n.tab === lazy[0].id);
+    clock.advance(8 * 60 * MIN);
+    const b2 = createBrowser({ local: b.store.local });
+    const win = b2.openWindow([lazy[0].url]);   // 恢复出来的第一个标签就是选中的
+    const bg2 = bootBackground(b2, clock, BG);
+    await bg2.settle();
+    const tab = b2.tabs.get(win.tabs[0]);
+    assert.equal(tab.url, target.url, '选中的占位标签加载成真网页');
+    assert.equal(view(b2).nodes.find(n => n.tab === tab.id).id, target.id, '还是原来的节点');
+    void bg;
   },
 
   async '手动休眠：正在看的不动，点开后自动醒来'() {
@@ -627,6 +745,261 @@ const tests = {
     b.api.tabs.onAttached.fire(t.G, { newWindowId: w2.id, newPosition: 1 }); await bg.settle();
     const v = view(b);
     assert.equal(v.byTitle('G').ws, v.ws.find(w => w.win === w2.id).id);
+  },
+
+  // ---------- 复制标签 ----------
+
+  async '复制标签：和原标签同一级，排在它后面，名字和跳转记录一起带上'() {
+    const { b, bg, t } = await readingSession();
+    b.navigate(t.C, url('C2')); await bg.settle();
+    const id = view(b).byTitle('C2').id;
+    await b.send({ type: 'rename', id, name: '我起的名字' });
+    const r = await b.send({ type: 'duplicate', id }); await bg.settle();
+    assert.ok(r.ok, r.error);
+    const v = view(b);
+    const copy = v.nodes.find(n => n.copy);
+    assert.equal(copy.url, url('C2'));
+    assert.equal(copy.parent, v.byTitle('A').id, '不是挂在原标签下面，而是同一级');
+    assert.equal(copy.alias, '我起的名字');
+    assert.deepEqual(copy.hist.map(h => h.url), [url('C')]);
+    const sibs = v.nodes.filter(n => n.parent === v.byTitle('A').id).sort((x, y) => (x.order ?? x.created) - (y.order ?? y.created));
+    assert.deepEqual(sibs.map(n => n.id).slice(1, 3), [id, copy.id], '紧跟在原标签后面');
+    assert.equal(b.tabs.get(copy.tab).index, b.tabs.get(t.C).index + 1);
+    assert.ok(b.tabs.get(copy.tab).active, '新标签被选中');
+    b.navigate(copy.tab, url('别处')); await bg.settle();
+    assert.equal(view(b).nodes.find(n => n.tab === copy.tab).copy, undefined, '跳到别的网页后就不再是副本');
+  },
+
+  async '复制最上层的标签：还在最上层，事件来得晚也不会被挂到原标签下面'() {
+    const { b, bg } = await readingSession({ openerLate: true });
+    const id = view(b).byTitle('A').id;
+    await b.send({ type: 'duplicate', id }); await bg.settle();
+    const v = view(b);
+    const copy = v.nodes.find(n => n.copy);
+    assert.equal(copy.parent, null);
+    assert.equal(v.nodes.length, 8, '没有多出别的节点');
+  },
+
+  async '没打开的标签不能复制'() {
+    const { b, bg, t } = await readingSession();
+    const id = view(b).byTitle('C').id;
+    b.closeTab(t.C); await bg.settle();
+    const r = await b.send({ type: 'duplicate', id });
+    assert.equal(r.ok, false);
+  },
+
+  // ---------- 两个标签：原生分屏 ----------
+
+  async '两个不相邻的标签并排：挪到一起，用原生分屏，记录下来，也能取消'() {
+    const { b, bg, t } = await readingSession();
+    const [A, G] = [view(b).byTitle('A').id, view(b).byTitle('G').id];
+    const r = await b.send({ type: 'split', ids: [A, G] }); await bg.settle();
+    assert.equal(r.r, 'native');
+    assert.equal(b.tabs.get(t.G).index, b.tabs.get(t.A).index + 1, '第二个紧贴在第一个右边');
+    assert.ok(b.tabs.get(t.A).active);
+    assert.equal(view(b).s.nodes[A].split, b.tabs.get(t.A).splitViewId);
+    assert.equal(view(b).s.nodes[G].split, b.tabs.get(t.A).splitViewId);
+    await b.send({ type: 'unsplit', id: G }); await bg.settle();
+    assert.equal(view(b).s.nodes[A].split, undefined);
+    assert.equal(view(b).s.nodes[G].split, undefined);
+    assert.equal(view(b).nodes.filter(n => n.st === 'open').length, 7, '标签都还开着');
+  },
+
+  async '第二个在第一个左边：对调成第一个在左'() {
+    const { b, bg, t } = await readingSession();
+    const r = await b.send({ type: 'split', ids: [view(b).byTitle('G').id, view(b).byTitle('B').id] }); await bg.settle();
+    assert.equal(r.r, 'native');
+    assert.equal(b.tabs.get(t.B).index, b.tabs.get(t.G).index + 1);
+  },
+
+  async '已经在别的分屏里的、固定的、不同分组的、别的窗口的，都能并排'() {
+    const { b, bg, t, win } = await readingSession();
+    const id = x => view(b).byTitle(x).id;
+    await b.send({ type: 'split', ids: [id('A'), id('B')] }); await bg.settle();
+    const r1 = await b.send({ type: 'split', ids: [id('B'), id('C')] }); await bg.settle();
+    assert.equal(r1.r, 'native', r1.error);
+    assert.equal(view(b).byTitle('A').split, undefined, '原来的分屏拆开了');
+    assert.equal(view(b).byTitle('B').split, b.tabs.get(t.C).splitViewId);
+    b.tabs.get(t.D).pinned = true;
+    b.tabs.get(t.E).groupId = 7;
+    const r2 = await b.send({ type: 'split', ids: [id('D'), id('E')] }); await bg.settle();
+    assert.equal(r2.r, 'native', r2.error);
+    assert.equal(b.tabs.get(t.E).pinned, true);
+    assert.equal(b.tabs.get(t.E).groupId, -1);
+    const w2 = b.openWindow([url('X')]); await bg.settle();
+    const r3 = await b.send({ type: 'split', ids: [id('F'), id('X')] }); await bg.settle();
+    assert.equal(r3.r, 'native', r3.error);
+    assert.equal(b.tabs.get(t.F).windowId, win.id);
+    assert.equal(b.tabs.get(w2.id === win.id ? 0 : view(b).byTitle('X').tab).windowId, win.id, '别的窗口的标签挪过来了');
+  },
+
+  async '没加载的标签放进分屏时会加载，分屏里的不会被自动或手动休眠'() {
+    const { b, bg, lazy } = await lazyGroup();
+    const tabs = lazy.slice(0, 2).map(x => x.id);
+    const v0 = view(b);
+    const ids = tabs.map(id => v0.nodes.find(n => n.tab === id).id);
+    const r = await b.send({ type: 'split', ids }); await bg.settle();
+    assert.equal(r.r, 'native', r.error);
+    for (const id of tabs) assert.ok(!isLazyUrl(b.tabs.get(id).url), '换成了真网页');
+    b.activate([...b.tabs.values()].find(x => !tabs.includes(x.id)).id); await bg.settle();
+    const r2 = await b.send({ type: 'sleep', ids }); await bg.settle();
+    assert.equal(r2.r, 0, '手动休眠跳过分屏里的');
+  },
+
+  async '自动休眠跳过分屏里的标签'() {
+    const { b, bg, clock, t } = await readingSession();
+    const id = x => view(b).byTitle(x).id;
+    await b.send({ type: 'split', ids: [id('C'), id('D')] }); await bg.settle();
+    b.activate(t.A); await bg.settle();
+    clock.advance(3 * 60 * MIN);
+    b.fireAlarm('sleep'); await bg.settle();
+    assert.ok(!b.tabs.get(t.C).discarded);
+    assert.ok(!b.tabs.get(t.D).discarded);
+    assert.ok(b.tabs.get(t.E).discarded, '别的标签照常休眠');
+  },
+
+  // ---------- 合到一页 ----------
+
+  async '三个标签合到一页：原标签关掉，节点留在树上，点它们跳到并排页'() {
+    const { b, bg, t } = await readingSession();
+    const id = x => view(b).byTitle(x).id;
+    const [C, E, G] = [id('C'), id('E'), id('G')];
+    const before = b.tabs.size;
+    const r = await b.send({ type: 'split', ids: [C, E, G] }); await bg.settle();
+    assert.equal(r.r, 'page', r.error);
+    const page = pageOf(b);
+    assert.ok(page.tab != null);
+    assert.equal(b.tabs.size, before - 2, '三个标签变成一个');
+    assert.ok(b.tabs.get(page.tab).active);
+    const q = new URL(page.url).searchParams;
+    assert.deepEqual(q.getAll('u'), ['C', 'E', 'G'].map(url), '网址按选中的顺序记在页面网址里');
+    assert.deepEqual(q.getAll('n'), [C, E, G]);
+    for (const x of [C, E, G]) {
+      const n = view(b).s.nodes[x];
+      assert.equal(n.st, 'stashed');
+      assert.equal(n.tab, null);
+      assert.equal(n.inPage, page.id);
+    }
+    assert.equal(page.parent, view(b).s.nodes[C].parent, '并排页放在第一个的位置');
+    b.activate(t.A); await bg.settle();
+    await b.send({ type: 'focus', id: E, win: 1 }); await bg.settle();
+    assert.ok(b.tabs.get(page.tab).active, '点原来的节点，跳到并排页');
+    assert.equal(view(b).s.nodes[E].tab, null, '不会单独打开');
+  },
+
+  async '浏览器没有分屏接口，或者分屏失败：两个标签也合到一页'() {
+    for (const opts of [{ noSplit: true }, { splitFails: true }]) {
+      const { b, bg } = await readingSession(opts);
+      const r = await b.send({ type: 'split', ids: [view(b).byTitle('C').id, view(b).byTitle('D').id] }); await bg.settle();
+      assert.equal(r.r, 'page', r.error);
+      assert.ok(pageOf(b));
+    }
+  },
+
+  async '并排的数量有限制，浏览器自带的页面放不进并排页'() {
+    const { b, bg, win } = await readingSession({ noSplit: true });
+    const id = x => view(b).byTitle(x).id;
+    assert.equal((await b.send({ type: 'split', ids: [id('A')] })).ok, false);
+    assert.equal((await b.send({ type: 'split', ids: ['A', 'B', 'C', 'D', 'E', 'F', 'G'].map(id) })).ok, false);
+    const set = b.addTab(win.id, 'edge://settings/', { active: false }); await bg.settle();
+    const r = await b.send({ type: 'split', ids: [id('A'), view(b).nodes.find(n => n.tab === set.id).id] });
+    assert.equal(r.ok, false);
+    assert.equal(view(b).byTitle('A').st, 'open', '失败时原标签不动');
+  },
+
+  async '关掉并排页：合进去的页面算关掉了，放行规则也清掉'() {
+    const { b, bg } = await threeInPage();
+    const page = pageOf(b);
+    await b.sendFrom(page.tab, { type: 'paneRule', hosts: ['papers.test'] }); await bg.settle();
+    assert.equal(b.sessionRules.size, 1);
+    b.closeTab(page.tab); await bg.settle();
+    for (const x of ['C', 'E', 'G']) {
+      const n = view(b).byTitle(x);
+      assert.equal(n.st, 'closed');
+      assert.equal(n.inPage, undefined);
+    }
+    assert.equal(b.sessionRules.size, 0);
+  },
+
+  async '放行规则只管这个标签、这些网站的框架页面，换网站时更新，死标签的规则顺手清掉'() {
+    const { b, bg } = await threeInPage();
+    const page = pageOf(b);
+    await b.sendFrom(page.tab, { type: 'paneRule', hosts: ['papers.test'] });
+    const rule = b.sessionRules.get(page.tab);
+    assert.deepEqual(rule.condition, { tabIds: [page.tab], requestDomains: ['papers.test'], resourceTypes: ['sub_frame'] });
+    assert.deepEqual(rule.action.responseHeaders.map(h => h.header).sort(), ['content-security-policy', 'x-frame-options']);
+    b.sessionRules.set(99999, { id: 99999, condition: { tabIds: [99999] } });
+    await b.sendFrom(page.tab, { type: 'paneRule', hosts: ['papers.test', 'other.test'] }); await bg.settle();
+    assert.deepEqual([...b.sessionRules.keys()], [page.tab]);
+    assert.deepEqual(b.sessionRules.get(page.tab).condition.requestDomains, ['papers.test', 'other.test']);
+  },
+
+  async '全部拆开：回到原来的节点，只有第一个马上加载，并排页不留记录'() {
+    const { b, bg } = await threeInPage();
+    const page = pageOf(b);
+    const q = new URL(page.url).searchParams;
+    const panes = q.getAll('n').map((node, i) => ({ node, url: q.getAll('u')[i] }));
+    await b.sendFrom(page.tab, { type: 'paneUndo', panes }); await bg.settle();
+    assert.equal(pageOf(b), undefined);
+    assert.ok(!b.tabs.has(page.tab));
+    const [C, E, G] = ['C', 'E', 'G'].map(x => view(b).byTitle(x));
+    for (const n of [C, E, G]) {
+      assert.equal(n.st, 'open');
+      assert.equal(n.inPage, undefined);
+      assert.ok(n.tab != null);
+    }
+    assert.equal(view(b).parentOf('C'), 'A', '还在树上原来的位置');
+    assert.equal(view(b).parentOf('E'), 'B');
+    assert.equal(b.tabs.get(C.tab).url, url('C'), '第一个是真网页');
+    assert.ok(b.tabs.get(C.tab).active);
+    assert.ok(isLazyUrl(b.tabs.get(E.tab).url), '其余的先不加载');
+  },
+
+  async '拿走一格：变回单独的标签时带着这一格现在的网址；直接拿掉就算关掉'() {
+    const { b, bg } = await threeInPage();
+    const page = pageOf(b);
+    const [C, E] = ['C', 'E'].map(x => view(b).byTitle(x).id);
+    await b.sendFrom(page.tab, { type: 'paneOut', node: C, url: url('C-里面的链接'), pop: true }); await bg.settle();
+    const c = view(b).s.nodes[C];
+    assert.equal(c.st, 'open');
+    assert.equal(c.url, url('C-里面的链接'));
+    assert.equal(c.inPage, undefined);
+    assert.deepEqual(c.hist.map(h => h.url), [url('C')], '原来的网页记进了跳转记录');
+    assert.equal(b.tabs.get(c.tab).index, b.tabs.get(page.tab).index + 1, '排在并排页后面');
+    await b.sendFrom(page.tab, { type: 'paneOut', node: E }); await bg.settle();
+    assert.equal(view(b).s.nodes[E].st, 'closed');
+    assert.equal(view(b).byTitle('G').inPage, page.id, '其余的不受影响');
+  },
+
+  async '并排页改网址不算跳转；关窗口再恢复时只打开并排页，不单独打开合进去的页面'() {
+    const { b, bg, win } = await threeInPage();
+    const page = pageOf(b);
+    b.navigate(page.tab, page.url + '&l=rows'); await bg.settle();
+    assert.equal(pageOf(b).hist, undefined);
+    const other = b.openWindow([url('X')]); await bg.settle();
+    void other;
+    const ws = pageOf(b).ws;
+    b.closeWindow(win.id); await bg.settle();
+    assert.equal(pageOf(b).st, 'stashed');
+    assert.equal(view(b).byTitle('C').inPage, pageOf(b).id, '关窗口不算关掉并排页');
+    await b.send({ type: 'restoreWs', ws }); await bg.settle();
+    const v = view(b);
+    assert.ok(pageOf(b).tab != null, '并排页回来了');
+    assert.equal(v.byTitle('C').tab, null, '合进去的页面不单独打开');
+    assert.equal(v.byTitle('C').st, 'stashed');
+    assert.ok(v.byTitle('A').tab != null, '其他标签照常恢复');
+  },
+
+  async '恢复分支时跳过已经合到并排页里的页面'() {
+    const { b, bg } = await threeInPage();
+    const A = view(b).byTitle('A').id;
+    await b.send({ type: 'stashBranch', id: A }); await bg.settle();
+    const r = await b.send({ type: 'restoreBranch', id: A }); await bg.settle();
+    assert.ok(r.ok, r.error);
+    const v = view(b);
+    assert.equal(v.byTitle('C').inPage, pageOf(b).id);
+    assert.equal(v.byTitle('C').tab, null);
+    assert.ok(v.byTitle('D').tab != null, '没合进去的正常恢复');
   },
 };
 

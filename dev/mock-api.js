@@ -162,6 +162,15 @@
       case 'sleep': { let c = 0; for (const id of msg.ids) if (nodes[id].tab && !nodes[id].sleep) { nodes[id].sleep = true; c++; } emit(); return c; }
       case 'closeIds': for (const id of msg.ids) { nodes[id].st = 'closed'; nodes[id].tab = null; nodes[id].closed = Date.now(); } break;
       case 'openUrl': add(nodes[msg.parent].ws, msg.parent, msg.url.split('/').pop(), msg.url, { ago: 0 }); break;
+      case 'duplicate': { const c = nodes[add(n.ws, n.parent, n.title, n.url, { ago: 0, seen: n.seen ? 60e3 : 0 })]; c.copy = true; c.order = (n.order ?? n.created) + .5; break; }
+      case 'unsplit': for (const x of Object.values(nodes)) if (x.split === n.split && x !== n) delete x.split; delete n.split; break;
+      case 'split': {
+        if (msg.ids.length === 2) { const id = ++seq; for (const i of msg.ids) nodes[i].split = id; emit(); return 'native'; }
+        const page = nodes[add('w1', null, '并排：' + msg.ids.map(i => nodes[i].title.slice(0, 20)).join(' ＋ '), 'split/split.html?u=x', { ago: 0, seen: 1 })];
+        for (const i of msg.ids) { nodes[i].st = 'stashed'; nodes[i].tab = null; nodes[i].inPage = page.id; }
+        emit();
+        return 'page';
+      }
     }
     emit();
   }

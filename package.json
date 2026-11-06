@@ -1,6 +1,6 @@
 {
   "name": "tab-trail",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "description": "标签脉络：把浏览器标签按打开关系整理成一棵树，记录阅读情况。支持 Chrome、Edge、Firefox。",
   "license": "MIT",

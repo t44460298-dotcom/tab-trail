@@ -15,6 +15,9 @@ function isBlank(url) {
   return !url || /^(about:(blank|newtab|home|privatebrowsing)|chrome:\/\/(newtab|new-tab-page)|edge:\/\/newtab|chrome-search:)/.test(url);
 }
 
+// 并排页：插件自己的页面，里面放着好几个网页
+const isSplitPage = url => !!url && url.startsWith(api.runtime.getURL('split/split.html'));
+
 function wsColor(w) {
   let h = 0;
   for (const ch of w.id) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
@@ -35,9 +38,9 @@ function buildIndex(state) {
     if (id && title && !TK.isPdf(url, title) && !arxiv.has(id)) arxiv.set(id, TK.cleanTitle(title, url));
   };
   for (const n of Object.values(state.nodes)) {
-    if (isBlank(n.url)) continue;
+    if (isBlank(n.url) || isSplitPage(n.url)) continue;
     const key = TK.urlKey(n.url);
-    if (isLive(n)) {
+    if (isLive(n) && !n.copy) {   // 特意复制出来的不算重复
       if (!live.has(key)) live.set(key, []);
       live.get(key).push(n);
     }

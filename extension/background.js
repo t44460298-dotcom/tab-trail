@@ -11,6 +11,8 @@
 //     star: 加了星标；note: 一句话备注；sleep: 标签处于休眠（已释放内存）
 //     alias: 用户起的名字（只在插件里显示，原标题仍在 title 里）。名字属于这个网页：跳到别的网页时随 hist 一起留下
 //     order: 手动拖动后在同一级里的位置（没有就按 created 排）；manual: 被手动移动过，不再自动认来源
+//     copy: 特意复制出来的标签，不算重复；跳到别的网页后就不再是副本了
+//     split: 所在的浏览器原生分屏的编号；inPage: 已合到哪个并排页（节点 id），合并期间标签是关着的，点它会跳到并排页
 //   settings = { sleepAfter }   多少分钟没看就让标签休眠，0 = 不自动休眠
 //   ws[id] = { id, name, named?, win, created, stashed }   一个工作区对应一个浏览器窗口，win 为空表示已收起
 //   act[windowId] = { tab, since, skip? }                   每个窗口当前激活的标签和开始看的时间
@@ -63,6 +65,7 @@ async function load() {
   reconcile(wins, fresh);
   prune();
   save(true);
+  scheduleLazyLoad(0);
 }
 
 function emptyState() {
@@ -90,19 +93,57 @@ function save(immediate) {
 
 function now() { return Date.now(); }
 function newId(prefix) { state.seq += 1; return prefix + state.seq.toString(36); }
-// 「点开才加载」的占位页（lazy/lazy.html?u=真实网址&t=标题）：一次打开很多标签时，没要看的先打开它，切过去才加载真网页。
-// 占位页的网址一律当作它代表的真实网址看待，这样记录、去重、重启后接回都不受影响；占位中的标签算作休眠
-const LAZY_PAGE = api.runtime.getURL('lazy/lazy.html');
-const isLazy = url => !!url && url.startsWith(LAZY_PAGE);
+// 「选中才加载」的占位页：一次打开很多标签时，没要看的先打开它，选中时才换成真网页。
+// 用 data: 网页而不是插件自己的页面：插件页面在刷新或卸载插件时会被浏览器关掉，data: 网页不受影响，也不访问任何网站。
+// 真实网址放在 # 后面。占位页的网址一律当作它代表的真实网址看待，这样记录、去重、重启后接回都不受影响；占位中的标签算作休眠
+const LAZY_MARK = '#tab-trail=';
+const LEGACY_LAZY = api.runtime.getURL('lazy/lazy.html');   // 0.7.0 的占位页，浏览器恢复会话时可能还会带回来
+const isLazy = url => !!url && (url.startsWith(LEGACY_LAZY) || (url.startsWith('data:text/html') && url.includes(LAZY_MARK)));
 function realUrl(url) {
   if (!isLazy(url)) return url;
-  try { return new URL(url).searchParams.get('u') || url; } catch { return url; }
+  try {
+    if (url.startsWith(LEGACY_LAZY)) return new URL(url).searchParams.get('u') || url;
+    return decodeURIComponent(url.slice(url.indexOf(LAZY_MARK) + LAZY_MARK.length));
+  } catch {
+    return url;
+  }
 }
-const lazyUrl = n => LAZY_PAGE + '?u=' + encodeURIComponent(n.url) + '&t=' + encodeURIComponent(n.title || n.url);
 function tabUrl(tab) { return realUrl(tab.url || tab.pendingUrl || ''); }
 const isAsleep = tab => !!tab.discarded || isLazy(tab.url || tab.pendingUrl);
-// 占位页还没打开时，浏览器报的标题可能只是那串插件网址，不能拿来当标题
-const lazyTitle = tab => isLazy(tab.url || tab.pendingUrl) && (/^[a-z-]+:\/\//i.test(tab.title || '') || (tab.title || '').includes('lazy.html'));
+// 占位页还没打开时，浏览器报的标题可能只是那串网址，不能拿来当标题
+const lazyTitle = tab => isLazy(tab.url || tab.pendingUrl) && (!tab.title || /^(data:|[a-z-]+:\/\/)/i.test(tab.title) || tab.title.includes('lazy.html'));
+
+// 网站图标从浏览器自己的缓存里取，不访问网站
+async function faviconData(url) {
+  try {
+    const res = await fetch(api.runtime.getURL('/_favicon/') + '?pageUrl=' + encodeURIComponent(url) + '&size=32');
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    return `data:${res.headers.get('content-type') || 'image/png'};base64,` + btoa(String.fromCharCode(...bytes));
+  } catch {
+    return '';
+  }
+}
+
+async function lazyUrl(n) {
+  const esc = t => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const title = esc(n.title || n.url);
+  const link = esc(n.url);
+  const icon = await faviconData(n.url);
+  const html = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>${title}</title>` +
+    (icon ? `<link rel="icon" href="${icon}">` : '') +
+    '<style>body{display:grid;place-items:center;min-height:90vh;margin:0;font:14px/1.6 system-ui,"Microsoft YaHei UI",sans-serif;text-align:center}' +
+    'main{max-width:560px;padding:24px}h1{font-size:18px;margin:0 0 6px;word-break:break-word}a{word-break:break-all}.h{margin-top:16px;font-size:12px;opacity:.6}</style>' +
+    `<main><h1>${title}</h1><a href="${link}">${link}</a><p class="h">这个标签还没加载，选中时会自动打开。同一网站的页面会排队加载，以免被网站限制。<br>没有自动打开的话，点上面的链接。</p></main>`;
+  return 'data:text/html;charset=utf-8,' + encodeURIComponent(html) + LAZY_MARK + encodeURIComponent(n.url);
+}
+
+// 并排：两个标签用浏览器原生分屏；三个以上（原生一组只能放两个），或者浏览器没有这个接口时，合到插件的并排页（split/split.html）
+const MAX_PANES = 6;
+const SPLIT_PAGE = api.runtime.getURL('split/split.html');
+const isSplitPage = url => !!url && url.startsWith(SPLIT_PAGE);
+const inSplit = tab => tab.splitViewId != null && tab.splitViewId !== -1;   // -1 是 tabs.SPLIT_VIEW_ID_NONE
+const isMerged = n => !!n.inPage && !!state.nodes[n.inPage];
+
 const recency = n => Math.max(n.last || 0, n.seen || 0);
 function cleanIcon(icon) { return icon && icon.length < 4096 ? icon : ''; }
 // 同一级里的先后：手动拖动过的按 order，没拖过的按打开时间
@@ -131,6 +172,16 @@ function childMap() {
 }
 
 function hasChildren(n) { return all().some(c => c.parent === n.id); }
+
+// 还没有上级的新标签，如果知道它是从哪个标签打开的，就挂过去。手动移动过的不动；时间久了也不动（来源信息可能早就过时了）
+function linkOpener(n, tab) {
+  if (n.parent || n.manual || tab.openerTabId == null || now() - n.created >= 30e3) return false;
+  const p = nodeByTab(tab.openerTabId);
+  if (!p || p === n || isAncestor(n, p)) return false;
+  n.parent = p.id;
+  delete n.young;
+  return true;
+}
 
 function isAncestor(a, n) {
   for (let p = n.parent && state.nodes[n.parent]; p; p = p.parent && state.nodes[p.parent]) if (p === a) return true;
@@ -162,6 +213,7 @@ function removeNodes(ids) {
     let p = n.parent;
     while (p && ids.has(p)) p = state.nodes[p]?.parent ?? null;
     n.parent = p && state.nodes[p] ? p : null;
+    if (ids.has(n.inPage)) delete n.inPage;
   }
   for (const id of ids) delete state.nodes[id];
 }
@@ -243,10 +295,12 @@ function attach(n, tab) {
   n.closed = 0;
   delete n.auto;
   delete n.young;
+  delete n.inPage;
   const url = tabUrl(tab);
   if (url && !isBlank(url)) n.url = url;
   if (tab.title && !isBlank(url) && !lazyTitle(tab)) n.title = tab.title;
   setSleep(n, isAsleep(tab));
+  setSplit(n, tab);
   if (tab.favIconUrl) n.icon = cleanIcon(tab.favIconUrl);
 }
 
@@ -289,12 +343,13 @@ function detach(n) {
   for (const [win, a] of Object.entries(state.act)) if (a.tab === n.tab) settle(win);
   n.tab = null;
   delete n.sleep;
+  delete n.split;
 }
 
 // 同一个标签里跳到新网址：把离开的页面记进 hist。只改了 #锚点的不算；回到上一页（后退）就把它从记录里拿掉。
-// 用户起的名字跟着网页走：离开时一起记进 hist，后退回来时恢复
+// 用户起的名字跟着网页走：离开时一起记进 hist，后退回来时恢复。并排页的网址只是记着里面放了什么，不算看过的页面
 function recordHistory(n, url) {
-  if (isBlank(n.url) || isBlank(url) || n.url.split('#')[0] === url.split('#')[0]) return;
+  if (isBlank(n.url) || isBlank(url) || isSplitPage(n.url) || isSplitPage(url) || n.url.split('#')[0] === url.split('#')[0]) return;
   const h = n.hist || (n.hist = []);
   if (h.length && h[h.length - 1].url === url) {
     const back = h.pop();
@@ -371,6 +426,7 @@ function reconcile(wins, fresh) {
       if (!n) continue;
       if (w) n.ws = w.id;
       setSleep(n, isAsleep(tab));
+      setSplit(n, tab);
     }
   }
 
@@ -418,6 +474,10 @@ function setSleep(n, asleep) {
   if (asleep) n.sleep = true; else delete n.sleep;
 }
 
+function setSplit(n, tab) {
+  if (inSplit(tab)) n.split = tab.splitViewId; else delete n.split;
+}
+
 // 加了星标或写了备注的，是用户特意留下的，不自动清理
 const isKept = n => n.star || !!n.note;
 
@@ -451,27 +511,29 @@ api.windows.onRemoved.addListener(winId => run(() => {
   tidyWs();
 }));
 
-api.tabs.onCreated.addListener(tab => run(() => {
-  if (!isTracked(tab.windowId) || nodeByTab(tab.id)) return false;
-  const opener = tab.openerTabId != null ? nodeByTab(tab.openerTabId) : null;
-  if (!opener && tryRevive(tab, tabUrl(tab))) return;
-  const n = makeNode(tab, opener, ensureWs(tab.windowId));
-  if (!opener) n.young = now();
-}));
+api.tabs.onCreated.addListener(tab => {
+  run(() => {
+    if (!isTracked(tab.windowId) || nodeByTab(tab.id)) return false;
+    const opener = tab.openerTabId != null ? nodeByTab(tab.openerTabId) : null;
+    if (!opener && tryRevive(tab, tabUrl(tab))) return;
+    const n = makeNode(tab, opener, ensureWs(tab.windowId));
+    if (!opener) n.young = now();
+  });
+  // Chrome / Edge 有时在 onCreated 里不带 openerTabId。马上查一次，不能等 onUpdated：
+  // 同一网站同时只有几个连接，排队中的页面很久都不会有 onUpdated，等不到就挂不上树
+  if (tab.openerTabId == null) {
+    api.tabs.get(tab.id).then(t => run(() => {
+      const n = nodeByTab(t.id);
+      return !!n && linkOpener(n, t);
+    })).catch(() => {});
+  }
+});
 
 api.tabs.onUpdated.addListener((tabId, info, tab) => run(() => {
+  if (info.status === 'complete') wokenTabs.delete(tabId);
   const n = nodeByTab(tabId);
   if (!n) return false;
-  let changed = false;
-  // Chrome / Edge 有时在 onCreated 里不带 openerTabId，要等后面的 onUpdated 才拿得到
-  if (!n.parent && !n.manual && tab.openerTabId != null && now() - n.created < 30e3) {
-    const p = nodeByTab(tab.openerTabId);
-    if (p && p !== n && !isAncestor(n, p)) {
-      n.parent = p.id;
-      delete n.young;
-      changed = true;
-    }
-  }
+  let changed = linkOpener(n, tab);
   const url = tabUrl(tab);
   if (url && url !== n.url) {
     // 无来源的新标签刚拿到真实网址：可能是重新打开了刚关掉的页面（Firefox 里网址常常这时才到）
@@ -480,33 +542,46 @@ api.tabs.onUpdated.addListener((tabId, info, tab) => run(() => {
       delete n.young;
       if (now() - young < 15e3 && !hasChildren(n) && tryRevive(tab, url)) return;
     }
+    if (isSplitPage(n.url) && !isSplitPage(url)) releaseMerged(n);   // 在并排页的标签里打开了别的网页，并排页就不在了
     recordHistory(n, url);
     n.url = url;
+    delete n.copy;
     changed = true;
   }
+  if ((inSplit(tab) ? tab.splitViewId : undefined) !== n.split) { setSplit(n, tab); changed = true; }
   if (tab.title && tab.title !== n.title && !lazyTitle(tab)) { n.title = tab.title; changed = true; }
   if (isAsleep(tab) !== !!n.sleep) { setSleep(n, isAsleep(tab)); changed = true; }
   if (info.favIconUrl !== undefined && !isLazy(tab.url) && cleanIcon(info.favIconUrl) !== n.icon) { n.icon = cleanIcon(info.favIconUrl); changed = true; }
+  if (tab.active && info.status === 'complete' && isLazy(tab.url)) scheduleLazyLoad();   // 比如按后退回到了占位页
   return changed;
 }));
 
 api.tabs.onActivated.addListener(({ tabId, windowId }) => run(() => {
   if (!isTracked(windowId)) return false;
+  const prev = state.act[windowId]?.tab;
   settle(windowId);
   state.act[windowId] = { tab: tabId, since: now() };
+  if (nodeByTab(tabId)?.sleep) { wokenTabs.add(tabId); scheduleLazyLoad(); }
+  if (prev !== tabId && wokenTabs.has(prev)) sleepAgain(prev);
 }));
 
 api.tabs.onRemoved.addListener((tabId, { windowId, isWindowClosing }) => run(() => {
+  wokenTabs.delete(tabId);
   if (state.act[windowId]?.tab === tabId) settle(windowId);
   const n = nodeByTab(tabId);
   if (!n) return false;
   n.tab = null;
   delete n.sleep;
+  delete n.split;
   if (n.st === 'stashed') return;
   if (isBlank(n.url) && !hasChildren(n)) { removeNodes(new Set([n.id])); return; }
   n.closed = now();
-  if (isWindowClosing) { n.st = 'stashed'; n.auto = true; }
-  else n.st = 'closed';
+  if (isWindowClosing) { n.st = 'stashed'; n.auto = true; return; }
+  n.st = 'closed';
+  if (isSplitPage(n.url)) {
+    releaseMerged(n);
+    setPaneRule(tabId, []).catch(() => {});
+  }
 }));
 
 api.tabs.onAttached.addListener((tabId, { newWindowId }) => run(() => {
@@ -546,10 +621,173 @@ async function sleepIdle() {
   const tabs = await api.tabs.query({ active: false, pinned: false, audible: false, discarded: false });
   for (const tab of tabs) {
     const n = nodeByTab(tab.id);
-    if (!n || n.sleep || isBlank(n.url) || tab.autoDiscardable === false) continue;   // 占位中的本来就没加载
+    if (!n || n.sleep || isBlank(n.url) || tab.autoDiscardable === false || inSplit(tab)) continue;   // 占位中的本来就没加载；分屏里的就算没选中也看得见
     if (Math.max(n.last || 0, n.seen || 0, n.created || 0) > limit) continue;
     try { await api.tabs.discard(tab.id); } catch {}
   }
+}
+
+// ---------- 选中才加载，同一网站排队 ----------
+
+// 很多网站不允许同时加载太多页面，快速点过一串标签就会被拒绝。所以：
+// 1. 占位标签选中后停留一小会儿才开始加载，只是路过的不加载；
+// 2. 同一网站一次只加载一个，等前面的加载完（最多等 15 秒）；
+// 3. 从休眠里点醒的标签，还没加载完就切走了，就让它接着睡，把名额让出来。
+const LOAD_DELAY = 350;
+const LOAD_GAP = 800;        // 同一网站相邻两次开始加载，至少隔这么久（刚开始加载时状态可能还没变成 loading）
+const LOAD_MAX_WAIT = 15e3;
+const wokenTabs = new Set();
+const waitingSince = new Map();
+const lastLoadStart = new Map();
+let loadTimer = null;
+
+function hostOf(url) {
+  try { return new URL(url).host; } catch { return ''; }
+}
+
+function scheduleLazyLoad(delay = LOAD_DELAY) {
+  clearTimeout(loadTimer);
+  loadTimer = setTimeout(() => ready.then(loadSelectedLazy).catch(e => console.error('[标签脉络]', e)), delay);
+}
+
+async function loadSelectedLazy() {
+  const tabs = await api.tabs.query({});
+  let wait = false;
+  for (const tab of tabs) {
+    if (!tab.active || !isLazy(tab.url || tab.pendingUrl)) continue;
+    const url = tabUrl(tab);
+    const host = hostOf(url);
+    if (!waitingSince.has(tab.id)) waitingSince.set(tab.id, now());
+    // 看 pendingUrl：网站还没响应时，标签的 url 还是占位页，其实真网页已经在加载了
+    const busy = tabs.some(o => o.id !== tab.id && o.status === 'loading' && !isLazy(o.pendingUrl || o.url) && hostOf(tabUrl(o)) === host);
+    const tooSoon = now() - (lastLoadStart.get(host) || 0) < LOAD_GAP;
+    if ((busy || tooSoon) && now() - waitingSince.get(tab.id) < LOAD_MAX_WAIT) { wait = true; continue; }
+    waitingSince.delete(tab.id);
+    lastLoadStart.set(host, now());
+    wokenTabs.add(tab.id);
+    try { await api.tabs.update(tab.id, { url }); } catch {}
+  }
+  for (const id of waitingSince.keys()) if (!tabs.some(t => t.id === id && t.active)) waitingSince.delete(id);
+  if (wait) scheduleLazyLoad(400);
+}
+
+async function sleepAgain(tabId) {
+  wokenTabs.delete(tabId);
+  try {
+    const tab = await api.tabs.get(tabId);
+    if (tab.status === 'loading' && !tab.active && !tab.discarded && !inSplit(tab) && !isLazy(tab.pendingUrl || tab.url)) await api.tabs.discard(tabId);
+  } catch {}
+}
+
+// ---------- 并排 ----------
+
+// 两个标签放进浏览器原生分屏：标签还是原来的标签，不重新加载，任何网站都能用。
+// 接口要求：相邻、在同一个窗口、固定状态和标签分组都一样、都没在别的分屏里
+async function nativeSplit(a, b, win) {
+  for (const n of [a, b]) if (n.tab == null) await openNode(n, win);
+  const both = async () => [await api.tabs.get(a.tab), await api.tabs.get(b.tab)];
+  let [ta, tb] = await both();
+  if (inSplit(ta) && ta.splitViewId === tb.splitViewId) return;
+  for (const t of [ta, tb]) if (inSplit(t)) await api.tabs.unsplit(t.splitViewId);
+  if (!!ta.pinned !== !!tb.pinned) await api.tabs.update(b.tab, { pinned: !!ta.pinned });
+  const sameGroup = async () => {
+    [ta, tb] = await both();
+    if ((ta.groupId ?? -1) === (tb.groupId ?? -1)) return;
+    if ((ta.groupId ?? -1) === -1) await api.tabs.ungroup(b.tab);
+    else await api.tabs.group({ groupId: ta.groupId, tabIds: b.tab });
+  };
+  await sameGroup();
+  [ta, tb] = await both();
+  if (tb.windowId !== ta.windowId || tb.index !== ta.index + 1) {
+    const index = tb.windowId === ta.windowId && tb.index < ta.index ? ta.index : ta.index + 1;
+    await api.tabs.move(b.tab, { windowId: ta.windowId, index });
+    await sameGroup();   // 挪到分组边上可能又离开了分组
+    [ta, tb] = await both();
+  }
+  await api.tabs.createSplit([a.tab, b.tab]);
+  for (const t of [ta, tb]) if (isAsleep(t)) await api.tabs.update(t.id, { url: tabUrl(t) });   // 分屏两边都看得见，没加载的要加载
+  await api.tabs.update(a.tab, { active: true });
+  await api.windows.update(ta.windowId, { focused: true });
+}
+
+function splitPageUrl(list) {
+  const q = new URLSearchParams();
+  for (const n of list) { q.append('n', n.id); q.append('u', n.url); }
+  return SPLIT_PAGE + '?' + q;
+}
+
+// 把一批网页合到一个并排页：先开并排页，再关掉原来的标签（不然同一批网页要加载两遍，也容易被网站限制）。
+// 原来的节点留在树上，点它们会跳到并排页
+async function openSplitPage(list, win) {
+  const web = list.filter(n => /^https?:/i.test(n.url));
+  if (web.length < 2) throw new Error('只有网页才能放到同一页，浏览器自带的页面放不进来');
+  const first = web[0];
+  const url = splitPageUrl(web);
+  const props = { url, active: true, windowId: state.ws[first.ws]?.win ?? win };
+  if (first.tab != null) {
+    try {
+      const t = await api.tabs.get(first.tab);
+      if (t.windowId === props.windowId) props.index = t.index;
+    } catch {}
+  }
+  addPending(url);
+  let tab;
+  try { tab = await api.tabs.create(props); } finally { dropPending(url); }
+  const page = nodeByTab(tab.id) || makeNode(tab, null, ensureWs(tab.windowId));
+  delete page.young;
+  actions.move({ id: page.id, target: first.id, pos: 'before' });
+  const t = now();
+  const tabIds = [];
+  for (const n of web) {
+    if (n.tab != null) { tabIds.push(n.tab); detach(n); }
+    n.st = 'stashed';
+    n.closed = t;
+    n.inPage = page.id;
+    delete n.auto;
+    delete n.stashedAt;
+  }
+  save(true);
+  await closeTabs(tabIds);
+}
+
+// 并排页关掉了：合进去的页面也算关掉了
+function releaseMerged(page) {
+  const t = now();
+  for (const n of all()) {
+    if (n.inPage !== page.id) continue;
+    delete n.inPage;
+    n.st = 'closed';
+    n.closed = t;
+  }
+}
+
+// 让某个并排页能显示禁止被嵌入的网站：只对这个标签里、这几个网站的框架页面去掉「不许嵌入」的响应头。
+// 限定网站是为了不让页面里的网站借机把别的网站嵌进来；浏览器还要求用户允许过这个网站，否则这条规则不起作用
+async function setPaneRule(tabId, hosts) {
+  const dnr = api.declarativeNetRequest;
+  if (!dnr?.updateSessionRules) return;
+  const live = new Set((await api.tabs.query({})).map(t => t.id));
+  const old = await dnr.getSessionRules();
+  await dnr.updateSessionRules({
+    removeRuleIds: old.filter(r => r.id === tabId || !r.condition.tabIds?.some(id => live.has(id))).map(r => r.id),
+    addRules: hosts.length ? [{
+      id: tabId,
+      condition: { tabIds: [tabId], requestDomains: hosts, resourceTypes: ['sub_frame'] },
+      action: { type: 'modifyHeaders', responseHeaders: [
+        { header: 'x-frame-options', operation: 'remove' },
+        { header: 'content-security-policy', operation: 'remove' },
+      ] },
+    }] : [],
+  });
+}
+
+// 把并排页里的一格变回单独的标签。这一格里点过链接的话，打开的是它现在的网页
+async function popPane({ node, url }, win, { active, index }) {
+  const n = state.nodes[node];
+  if (!n) { await api.tabs.create({ windowId: win, url, active, index }); return; }
+  delete n.inPage;
+  if (url && url !== n.url) { recordHistory(n, url); n.url = url; }
+  await openNode(n, win, { active, index, nearParent: false });
 }
 
 // ---------- 快速搜索框 ----------
@@ -580,12 +818,12 @@ async function openSwitcher() {
 
 // ---------- 侧边栏发来的操作 ----------
 
-api.runtime.onMessage.addListener((msg, _sender, reply) => {
+api.runtime.onMessage.addListener((msg, sender, reply) => {
   ready
     .then(() => {
       const fn = actions[msg?.type];
       if (!fn) throw new Error('未知操作 ' + msg?.type);
-      return fn(msg);
+      return fn(msg, sender);
     })
     .then(r => { save(true); reply({ ok: true, r }); },
           e => { console.error('[标签脉络]', e); save(true); reply({ ok: false, error: String(e) }); });
@@ -599,11 +837,12 @@ function need(id) {
 }
 
 // 打开一个不在标签栏里的节点（已关闭 / 已收起 / 孤儿）
-async function openNode(n, winId, { active = true, nearParent = true } = {}) {
+async function openNode(n, winId, { active = true, nearParent = true, index } = {}) {
   if (isBlank(n.url)) return;
   const w = state.ws[n.ws];
   const target = w?.win ?? winId;
   const props = { windowId: target, url: n.url, active };
+  if (index != null && target === winId) props.index = index;
   const p = n.parent && state.nodes[n.parent];
   if (nearParent && p?.tab != null) {
     try {
@@ -612,11 +851,17 @@ async function openNode(n, winId, { active = true, nearParent = true } = {}) {
     } catch {}
   }
   // 不是马上要看的：先不加载。Firefox 自带「不加载地打开」；Chrome / Edge 先打开占位页，切过去时才加载
-  if (!active && IS_FIREFOX) { props.discarded = true; props.title = n.title || n.url; }
-  else if (!active && /^https?:/i.test(n.url)) props.url = lazyUrl(n);
+  if (!active && /^https?:/i.test(n.url)) {
+    if (IS_FIREFOX) { props.discarded = true; props.title = n.title || n.url; }
+    else props.url = await lazyUrl(n);
+  }
   addPending(n.url);
   try {
-    const tab = await api.tabs.create(props);
+    // 万一某个浏览器不让打开占位页，就退回直接打开，不能把标签弄丢
+    const tab = await api.tabs.create(props).catch(e => {
+      if (props.url === n.url) throw e;
+      return api.tabs.create({ ...props, url: n.url });
+    });
     attach(n, tab);
   } finally {
     dropPending(n.url);
@@ -668,6 +913,7 @@ const actions = {
   // 点击节点：打开中的就切过去，不在标签栏的就重新打开
   async focus({ id, win }) {
     const n = need(id);
+    if (isMerged(n)) return actions.focus({ id: n.inPage, win });
     if (n.tab != null) {
       const tab = await api.tabs.update(n.tab, { active: true });
       await api.windows.update(tab.windowId, { focused: true });
@@ -709,6 +955,81 @@ const actions = {
     }
   },
 
+  // 复制标签：和浏览器自带的「复制标签」一样，连同前进后退记录一起复制。新标签排在原标签后面，同一级
+  async duplicate({ id }) {
+    const n = need(id);
+    if (n.tab == null) throw new Error('这个标签没有打开');
+    addPending(n.url);
+    let tab;
+    try { tab = await api.tabs.duplicate(n.tab); } finally { dropPending(n.url); }
+    if (!tab) throw new Error('这个标签不能复制');
+    const c = nodeByTab(tab.id) || makeNode(tab, null, ensureWs(tab.windowId));
+    if (isBlank(c.url)) c.url = n.url;
+    c.title ||= n.title;
+    c.icon ||= n.icon;
+    c.seen = n.seen;
+    c.copy = true;
+    if (n.alias) c.alias = n.alias;
+    if (n.hist) c.hist = n.hist.map(h => ({ ...h }));
+    delete c.young;
+    actions.move({ id: c.id, target: n.id, pos: 'after' });
+  },
+
+  // 并排显示。ids 的顺序就是从左到右的顺序
+  async split({ ids, win }) {
+    const list = [...new Set(ids)].map(need);
+    if (list.length < 2) throw new Error('至少要两个标签才能并排');
+    if (list.length > MAX_PANES) throw new Error(`一页最多放 ${MAX_PANES} 个`);
+    if (list.length === 2 && api.tabs.createSplit) {
+      try {
+        await nativeSplit(list[0], list[1], win);
+        return 'native';
+      } catch (e) {
+        console.warn('[标签脉络] 原生分屏不行，改用并排页', e);
+      }
+    }
+    await openSplitPage(list, win);
+    return 'page';
+  },
+
+  async unsplit({ id }) {
+    const n = need(id);
+    if (n.split != null) await api.tabs.unsplit(n.split);
+  },
+
+  // 以下三个是并排页发来的
+  async paneRule({ hosts }, sender) {
+    await setPaneRule(sender.tab.id, hosts);
+  },
+
+  // 拿走一格：pop 为真时变回单独的标签，否则这个网页算关掉了
+  async paneOut({ node, url, pop }, sender) {
+    if (pop) {
+      await popPane({ node, url }, sender.tab.windowId, { active: true, index: sender.tab.index + 1 });
+      return;
+    }
+    const n = state.nodes[node];
+    if (n?.inPage) {
+      delete n.inPage;
+      n.st = 'closed';
+      n.closed = now();
+    }
+  },
+
+  // 全部拆开：每一格都变回单独的标签，并排页本身不留记录。和打开保存的组一样，只有第一个马上加载
+  async paneUndo({ panes }, sender) {
+    const { id: tabId, windowId, index } = sender.tab;
+    for (const [i, p] of panes.entries()) {
+      try { await popPane(p, windowId, { active: i === 0, index: index + i + 1 }); }
+      catch (e) { console.warn('[标签脉络] 打不开', p.url, e); }
+    }
+    const page = nodeByTab(tabId);
+    if (page) removeNodes(new Set([page.id]));
+    save(true);
+    await api.tabs.remove(tabId);
+    await setPaneRule(tabId, []);
+  },
+
   // 收起一个分支：关掉其中打开的标签，记录保留在树上，以后一键恢复
   async stashBranch({ id }) {
     const root = need(id);
@@ -732,7 +1053,7 @@ const actions = {
   // 恢复一个分支：只有最近看过的那一个马上加载，其余的点开时再加载，免得一下子全开卡住
   async restoreBranch({ id, win }) {
     const root = need(id);
-    const list = subtree(root).filter(n => (n.st === 'stashed' || (n.st === 'open' && n.tab == null)) && !isBlank(n.url));
+    const list = subtree(root).filter(n => (n.st === 'stashed' || (n.st === 'open' && n.tab == null)) && !isBlank(n.url) && !isMerged(n));
     delete root.stashedAt;
     root.fold = false;
     await openList(list, win);
@@ -797,6 +1118,8 @@ const actions = {
       // 和 target 同一级，插在它前面或后面：取相邻两个的中间值
       const parent = t.parent && state.nodes[t.parent]?.ws === n.ws ? t.parent : null;
       const sibs = siblingsOf(parent);
+      // 同一毫秒打开的分不出先后，取不到中间值，先把这一级重新编号
+      if (new Set(sibs.map(sortKey)).size < sibs.length) sibs.forEach((s, k) => { s.order = k; });
       const i = sibs.indexOf(t);
       const near = pos === 'before' ? sibs[i - 1] : sibs[i + 1];
       const a = sortKey(t);
@@ -850,7 +1173,7 @@ const actions = {
       if (n?.tab == null || n.sleep) continue;
       try {
         const tab = await api.tabs.get(n.tab);
-        if (tab.active || tab.discarded) continue;
+        if (tab.active || tab.discarded || inSplit(tab)) continue;
         await api.tabs.discard(n.tab);
         count++;
       } catch {}
@@ -898,7 +1221,7 @@ const actions = {
     const w = state.ws[ws];
     if (!w) return;
     if (w.win != null) { await api.windows.update(w.win, { focused: true }); return; }
-    const reopen = n => (n.st === 'stashed' || (n.st === 'open' && n.tab == null)) && !isBlank(n.url);
+    const reopen = n => (n.st === 'stashed' || (n.st === 'open' && n.tab == null)) && !isBlank(n.url) && !isMerged(n);
     const list = (only ? subtree(need(only)) : wsInOrder(w)).filter(reopen);
     const focus = pickFocus(list);
     const isEmptyWin = id => { const h = wsOfWindow(id); return !h || h === w || all().every(n => n.ws !== h.id || isBlank(n.url)); };

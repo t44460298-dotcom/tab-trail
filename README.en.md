@@ -34,6 +34,8 @@ Tab Trail does not replace the tab strip. It adds a **reading tree** in the side
 - **Stash and restore**: stash a branch (tabs close, the records stay in the tree) and restore it later with the same structure.
 - **Saved groups**: save a tree as a named group ("Save as group…"), browse all saved groups as cards, and reopen any one later. In a fresh, empty window the panel offers the saved groups right away and opens the one you pick in that window.
 - **Organize**: drag and drop to restructure the tree, move branches between workspaces, rename entries (`F2`, shown only inside Tab Trail), stars and notes, duplicate-tab warnings, cleaner titles (site names like "- YouTube" are removed), PDF detection.
+- **Duplicate a tab** (`D`): the copy sits right after the original at the same level and keeps its name and in-tab history. It is not flagged as a duplicate.
+- **Side by side**: two tabs use the browser's native split view (Chrome / Edge 155+). Three to six are merged into one page you can arrange in columns, rows or a grid, resize, maximize one pane, and split apart again. The merged tabs stay in the tree. Sites are loaded one at a time per host to avoid rate limits.
 - **Save memory**: tabs you have not looked at for a while are put to sleep automatically (default: 2 hours).
 - **Export**: a branch or a whole workspace as a Markdown checklist, or as a bookmarks file any browser can import.
 - Light and dark themes, compact mode, three font sizes.
@@ -69,6 +71,11 @@ Tab Trail makes no network requests and collects nothing. Everything is stored i
 | `alarms` | Check every 5 minutes for tabs to put to sleep |
 | `sidePanel` | Show the panel in Chrome / Edge |
 | `favicon` | Show site icons in Chrome / Edge, including for closed tabs |
+| `webNavigation` | Track which page each pane of a side-by-side page is on |
+| `declarativeNetRequestWithHostAccess` | Let the side-by-side page show sites that refuse to be embedded: in that tab only, and only for the sites in its panes, the `X-Frame-Options` and `Content-Security-Policy` response headers are removed |
+| Site access (optional, asked when needed) | The rule above only works for sites you allow. Tab Trail injects no scripts and does not read page content. |
+
+Inside a side-by-side page, sites lose the protection of their `Content-Security-Policy`, so open banking and payment sites in their own tab. Some sites also refuse to work when embedded (blank page, failed login); the ↗ button opens them as a normal tab.
 
 ## Related projects
 

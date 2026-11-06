@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>并排</title>
+  <link rel="icon" href="../icons/icon32.png">
+  <link rel="stylesheet" href="../panel/theme.css">
+  <link rel="stylesheet" href="split.css">
+</head>
+<body>
+  <div class="bar">
+    <span class="brand">并排 <b id="count"></b></span>
+    <div class="seg" role="group" aria-label="排列方式">
+      <button data-l="cols" title="从左到右排开">左右</button>
+      <button data-l="rows" title="从上到下排开">上下</button>
+      <button data-l="grid" title="排成几行几列">网格</button>
+    </div>
+    <span class="hint">拖动缝隙调大小，双击标题放大一格。显示不出来或登录不了的网站，点 ↗ 单独打开。</span>
+    <button id="undo" class="btn" title="每一格都变回单独的标签">全部拆开</button>
+  </div>
+  <div id="perm" class="perm" hidden>
+    <div class="perm-text">
+      <b>要显示 <span id="permSites"></span>，需要你允许一次</b>
+      <p>很多网站不许别的页面显示它们。允许后，插件只在并排页里去掉这条限制，也不会读取网页内容。浏览器的提示会写「读取和更改数据」，那是它对这项权限的固定说法。</p>
+    </div>
+    <button id="permYes" class="btn primary">允许这些网站</button>
+    <button id="permAll" class="btn" title="以后在并排页里打开任何网站都不用再问">允许所有网站</button>
+  </div>
+  <div id="stage" class="stage"></div>
+  <script src="../panel/titles.js"></script>
+  <script src="../panel/common.js"></script>
+  <script src="split.js"></script>
+</body>
+</html>
